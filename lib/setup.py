@@ -239,7 +239,7 @@ UMask=0077
             raise RuntimeError('Uninstall the existing Desktop Restore integration before moving it.')
         if (self.config / 'systemd/user/desktop-restore.service').exists():
             raise RuntimeError('An existing desktop-restore.service is installed. Remove its integration before installing this plugin.')
-        for command in ('python3', 'ghostty', 'hyprctl', 'uwsm-app', 'gio', 'systemctl', 'timeout', 'busctl'):
+        for command in ('python3', 'hyprctl', 'uwsm-app', 'gio', 'systemctl', 'timeout', 'busctl'):
             if not shutil.which(command):
                 raise RuntimeError('Missing required command: ' + command)
         binds = json.loads(run(['hyprctl', '-j', 'binds']))

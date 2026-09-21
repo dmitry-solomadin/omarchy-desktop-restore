@@ -62,6 +62,12 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((self.home / '.local/bin/desktop-restore').exists())
         self.assertFalse(self.integration.receipt.exists())
 
+    def test_install_on_foot_only_desktop_does_not_require_ghostty(self):
+        with patch.object(setup.shutil, 'which', side_effect=lambda command:
+                          None if command == 'ghostty' else '/usr/bin/' + command):
+            self.integration.install()
+        self.assertTrue(self.integration.receipt.exists())
+
     def test_uninstall_preserves_unrelated_later_config_changes(self):
         self.integration.install()
         with self.integration.bindings.open('a') as stream:

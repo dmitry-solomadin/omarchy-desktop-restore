@@ -69,7 +69,7 @@ def record(kind, state, payload):
         return
     session = payload.get('session_id', '')
     cwd = payload.get('cwd', '')
-    if not isinstance(session, str) or not SESSION_ID.fullmatch(session) or not Path(cwd).is_absolute():
+    if not isinstance(session, str) or not SESSION_ID.fullmatch(session) or not isinstance(cwd, str) or not Path(cwd).is_absolute():
         return
     pid = os.getppid()
     for _ in range(64):
@@ -96,6 +96,8 @@ def options(args, valued, flags):
     index = 0
     while index < len(args):
         value = args[index]
+        if value == '--':
+            break
         key = value.split('=', 1)[0]
         if key in valued:
             if '=' in value:
@@ -122,6 +124,24 @@ def herdr_session(args):
     if not args or all(a in ('--handoff',) for a in args):
         return None
     raise ValueError('Cannot identify this herdr client session')
+
+
+def codex_mode(args):
+    # Global options can precede the subcommand (codex -p work exec ...).
+    valued = {'-c', '--config', '-p', '--profile', '-m', '--model', '-s', '--sandbox',
+              '-a', '--ask-for-approval', '-C', '--cd', '--enable', '--disable',
+              '-i', '--image', '--local-provider', '--add-dir', '--remote', '--remote-auth-token-env'}
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg == '--':
+            return None
+        elif arg in valued:
+            skip = True
+        elif not arg.startswith('-'):
+            return arg
+    return None
 
 
 def terminal_branch(window, procs, siblings):
@@ -156,6 +176,9 @@ def terminal_branch(window, procs, siblings):
 
 def terminal_agent(window, procs, state, shared=False, siblings=None):
     candidates = []
+    roots = {pid: proc for pid, proc in procs.items()
+             if proc['parent'] == window['pid'] and proc.get('tty')}
+    terminal_ttys = {proc['tty'] for proc in roots.values()}
     for pid in descendants(window['pid'], procs):
         proc = procs[pid]
         identified = command(proc)
@@ -165,12 +188,15 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
         if kind == 'herdr' and args and args[0] in ('server', 'api', 'status', 'integration'):
             continue
         # Exclude non-interactive CLI jobs, tool subprocesses and background jobs.
-        if kind == 'codex' and args and args[0] in ('exec', 'review', 'app-server', 'mcp-server'):
+        if kind == 'codex' and codex_mode(args) in ('exec', 'e', 'review', 'app-server', 'mcp-server',
+                                                  'login', 'logout', 'mcp', 'completion', 'debug'):
             continue
         if kind == 'claude' and any(a in ('-p', '--print', '--background', '--bg') for a in args):
             continue
         if not proc.get('tty') or proc.get('pgrp') != proc.get('tpgid'):
             continue
+        if proc['tty'] not in terminal_ttys:
+            continue  # A tool's private PTY is not the visible terminal.
         candidates.append((pid, kind, args))
     if not candidates:
         return None
@@ -182,7 +208,7 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
     # The npm Codex shim and its native child represent one interactive CLI.
     candidates = [c for c in candidates if not (Path(procs[c[0]]['cmd'][0]).name in ('node', 'nodejs', 'bun')
                   and any(other[1] == c[1] and other[0] in descendants(c[0], procs) for other in candidates if other != c))]
-    if shared:
+    if shared or len(roots) > 1:
         root = terminal_branch(window, procs, siblings or [window])
         branch = descendants(root, procs) | {root}
         candidates = [c for c in candidates if c[0] in branch]
@@ -194,8 +220,8 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
     proc = procs[pid]
     env = process_env(pid)
     if kind == 'herdr':
-        session = herdr_session(args)
-        argv = ['herdr'] + (['--session', session] if session is not None else [])
+        session = herdr_session(args) or 'default'
+        argv = ['herdr', '--session', session]
         cwd = proc['cwd']
         env = {k: v for k, v in env.items() if k in ('HERDR_CONFIG_PATH', 'XDG_CONFIG_HOME')}
     else:
@@ -206,7 +232,7 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
         if kind == 'codex':
             servers = [child for child in descendants(pid, procs)
                        if command(procs[child]) and command(procs[child])[0] == 'codex'
-                       and command(procs[child])[1][:1] == ['app-server']]
+                       and codex_mode(command(procs[child])[1]) == 'app-server']
             if servers:
                 owners = servers
         records = []
@@ -219,7 +245,10 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
                     or data.get('start') != procs[owner].get('start')):
                 raise ValueError(f'Stale {kind} session hook record; waiting for a fresh event')
             records.append(data)
-        if len({(data.get('session'), data.get('cwd')) for data in records}) != 1:
+        if any(not isinstance(data.get('session'), str) or not SESSION_ID.fullmatch(data['session'])
+               or not isinstance(data.get('cwd'), str) or not Path(data['cwd']).is_absolute() for data in records):
+            raise ValueError(f'Invalid {kind} session hook record')
+        if len({(data['session'], data['cwd']) for data in records}) != 1:
             raise ValueError(f'Multiple {kind} session hook records for this terminal')
         data = records[0]
         session, cwd = data.get('session', ''), data.get('cwd', '')

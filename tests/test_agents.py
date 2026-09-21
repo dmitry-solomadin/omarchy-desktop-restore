@@ -115,7 +115,7 @@ class AgentTests(unittest.TestCase):
         self.assertIsNone(agents.terminal_agent(self.window, self.procs, self.state))
 
     def test_herdr_default_and_named_sessions(self):
-        for args, expected in (([], ['herdr']), (['--session', 'work'], ['herdr', '--session', 'work']),
+        for args, expected in (([], ['herdr', '--session', 'default']), (['--session', 'work'], ['herdr', '--session', 'work']),
                                (['session', 'attach', 'work'], ['herdr', '--session', 'work'])):
             self.procs[12]['cmd'] = ['herdr'] + args
             result = agents.terminal_agent(self.window, self.procs, self.state)
@@ -125,6 +125,33 @@ class AgentTests(unittest.TestCase):
         self.procs[12]['cmd'] = ['herdr', '--session', 'project']
         self.procs[13] = proc(12, ['claude'])
         self.assertEqual(agents.terminal_agent(self.window, self.procs, self.state)['kind'], 'herdr')
+
+    def test_codex_exec_with_global_options_is_not_an_interactive_session(self):
+        self.procs[12]['cmd'] = ['codex', '-p', 'work', 'exec', 'task']
+        self.assertIsNone(agents.terminal_agent(self.window, self.procs, self.state))
+
+    def test_agent_tool_private_pty_does_not_become_a_desktop_session(self):
+        self.metadata()
+        self.procs[13] = proc(12, ['claude'], tty=2)
+        self.assertEqual(agents.terminal_agent(self.window, self.procs, self.state)['kind'], 'codex')
+
+    def test_hidden_agent_tab_does_not_replace_the_visible_plain_shell(self):
+        self.procs[20] = proc(10, ['zsh'], cwd='/other', tty=2)
+        visible = {**self.window, 'title': '/other'}
+        self.assertIsNone(agents.terminal_agent(visible, self.procs, self.state))
+
+    def test_corrupt_hook_cannot_crash_capture(self):
+        self.metadata()
+        path = self.state / 'codex-12.json'
+        data = json.loads(path.read_text())
+        data['session'] = ['invalid']
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, 'Invalid'):
+            agents.terminal_agent(self.window, self.procs, self.state)
+
+    def test_default_herdr_identity_matches_older_checkpoints(self):
+        self.assertEqual(app.identity({'kind': 'herdr', 'session': None}),
+                         app.identity({'kind': 'herdr', 'session': 'default'}))
 
     def test_remote_and_monolithic_herdr_are_explicitly_rejected(self):
         for args in (['--remote', 'host'], ['--no-session']):

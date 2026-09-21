@@ -16,12 +16,12 @@ import sys
 import time
 import urllib.parse
 from agents import read_process, terminal_agent
+from terminals import TERMINALS, terminal_launch
 
 HOME = Path.home()
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', HOME / '.config'))
 STATE = Path(os.environ.get('XDG_STATE_HOME', HOME / '.local/state')) / 'desktop-restore'
 SHELLS = {'bash', 'zsh', 'fish', 'sh', 'nu'}
-TERMINALS = {'ghostty', 'kitty', 'alacritty', 'foot', 'footclient', 'wezterm-gui'}
 BROWSERS = {
     'google-chrome': 'google-chrome-stable', 'chromium': 'chromium',
     'brave-browser': 'brave', 'firefox': 'firefox', 'zen': 'zen-browser',
@@ -246,11 +246,8 @@ def capture(fast=False):
                 else:
                     w['cwd'] = terminal_cwd(c, procs)
                     w['argv'] = []
-                # Independent Ghostty process makes the new window unambiguous.
-                w['launch'] = ['ghostty', '--gtk-single-instance=false', '--class=' + c['class'],
-                               '--working-directory=' + w['cwd']]
-                if w['argv']:
-                    w['launch'] += ['-e'] + w['argv']
+                w['terminal'] = executable
+                w['launch'] = terminal_launch(executable, c, w['cwd'], w['argv'])
             elif c['class'].lower() in BROWSERS:
                 w['kind'] = 'browser'
                 binary = BROWSERS[c['class'].lower()]
@@ -304,7 +301,8 @@ def save_shutdown(target=None, if_shutting_down=False):
 
 def identity(w):
     if w['kind'] in ('codex', 'claude', 'herdr'):
-        return (w['kind'], w.get('session'), tuple(sorted(w.get('agent_env', {}).items())))
+        session = w.get('session') or ('default' if w['kind'] == 'herdr' else None)
+        return (w['kind'], session, tuple(sorted(w.get('agent_env', {}).items())))
     if w['kind'] == 'opencode':
         return ('opencode', w.get('session'))
     if w['kind'] in ('terminal', 'opencode-home'):

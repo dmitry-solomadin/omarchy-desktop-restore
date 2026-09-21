@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 — 2026-09-21
+
+- Restore terminals in their original emulator: native Ghostty, Foot/footclient,
+  Kitty, Alacritty and WezTerm launch commands preserve class/app ID and cwd.
+  Foot clients reopen as independent Foot windows, without requiring a server.
+- Removed Ghostty as a mandatory installation dependency.
+- Prevent tool-owned private PTYs and hidden agent tabs from being mistaken for
+  the visible terminal session. Handle Codex noninteractive subcommands preceded
+  by global options and reject malformed hook identities without crashing capture.
+- Normalize herdr's implicit and explicit default-session identities to avoid
+  duplicate restores, including checkpoints written by older versions.
+- Added terminal/agent capture regression coverage and live Foot/herdr restore checks.
+
 ## 0.2.1 — 2026-09-21
 
 - Fixed agent detection in shared Ghostty processes: pair directory-titled windows

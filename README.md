@@ -7,7 +7,7 @@ Restore when you want with **Super+Shift+R** or the CLI. Saving is automatic
 and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
 with Omarchy's normal power action even if saving fails or hangs.
 
-Version **0.2.1** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.3.0** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -15,7 +15,8 @@ Version **0.2.1** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 - Checkpoints across all workspaces, including named and special workspaces.
 - Restores workspaces, connected monitors, floating geometry and fullscreen state.
-- Reopens terminal working directories in independent Ghostty windows.
+- Reopens terminal working directories and agents in their original emulator:
+  Ghostty, Foot, Kitty, Alacritty or WezTerm.
 - Resolves OpenCode 2 window titles to exact session IDs, including truncated
   titles; ambiguous matches are reported instead of choosing the newest session.
 - Resumes Codex and Claude Code by exact IDs recorded by their native session
@@ -37,11 +38,11 @@ Version **0.2.1** · Omarchy 4 / Lua-based Hyprland · MIT license
 Developed against **Omarchy 4.0.4 / Hyprland 0.56.2** and its Lua dispatch API.
 Legacy Hyprland `.conf` configurations are not supported.
 
-Required commands: `python3` (3.10+), `hyprctl`, `ghostty`, `uwsm-app`, `gio`,
+Required commands: `python3` (3.10+), `hyprctl`, `uwsm-app`, `gio`,
 `systemctl`, `busctl`, and GNU `timeout`. The plugin's nonvisual service entry point
 uses Omarchy's Quickshell shell. **`opencode2` is optional**, required only for OpenCode recovery;
-the adapter targets its V2 session API. Terminal restoration currently uses
-Ghostty even if the original terminal used another supported emulator.
+the adapter targets its V2 session API. Keep the terminal emulators used by your
+checkpoint installed; Ghostty is not required for a Foot-only desktop.
 
 ## Install
 
@@ -105,6 +106,33 @@ desktop-restore save --file "$HOME/work-desktop.json"
 desktop-restore restore --file "$HOME/work-desktop.json"
 ```
 
+## Terminal support
+
+| Terminal | Restore behavior |
+| --- | --- |
+| Ghostty | Independent process, original class and directory |
+| Foot / footclient | Standalone Foot window, original app ID and directory; no pre-existing server needed |
+| Kitty | New Kitty process, original class and directory |
+| Alacritty | New Alacritty process, original class and directory |
+| WezTerm | `wezterm start --always-new-process`, original class and directory |
+
+The same terminal adapters wrap OpenCode, Codex, Claude Code and herdr resume
+commands. Shell windows reopen at their working directory using the emulator's
+configured default shell. Commands and paths are passed as separate arguments,
+including paths containing spaces. Unknown tagged terminals are reported rather
+than silently converted to Ghostty.
+
+Shared-process windows (including Foot server mode) use the one-to-one shell
+branch matching described below. Terminal tabs/splits, remote WezTerm domains,
+and external multiplexers are not reconstructed. Custom terminal launch flags,
+alternate config files and transient environment overrides are not replayed;
+the emulator's normal configuration applies.
+
+Live close/reopen checks covered Foot shell windows and herdr in Foot, including
+shared Foot server windows, silent workspace placement and repeat-restore deduplication. Kitty, Alacritty and
+WezTerm have capture/launch regression tests and documented CLI checks; they have
+not been exercised live on the development machine.
+
 ## Agent sessions
 
 | Agent | How it is restored |
@@ -112,7 +140,7 @@ desktop-restore restore --file "$HOME/work-desktop.json"
 | OpenCode 2 | Unique window title → exact session ID; `opencode2 --session ID DIRECTORY` |
 | Codex CLI | Process-bound hook record → `codex resume ID` in the recorded directory |
 | Claude Code | Process-bound hook record → `claude --resume ID` in the recorded directory |
-| herdr | `herdr` or `herdr --session NAME`; herdr owns the persisted workspace/tab/pane contents |
+| herdr | `herdr --session NAME` (including `default`); herdr owns the persisted workspace/tab/pane contents |
 
 When the relevant command is installed, setup adds small **SessionStart** and
 **UserPromptSubmit** hooks to `~/.codex/hooks.json` and `~/.claude/settings.json`.
