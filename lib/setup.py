@@ -112,6 +112,54 @@ class Setup:
         self.bindings = self.config / 'hypr/bindings.lua'
         self.menu = self.config / 'omarchy/extensions/omarchy-menu.jsonc'
 
+    def agent_hook_files(self):
+        result = []
+        paths = {
+            'claude': Path(os.environ.get('CLAUDE_CONFIG_DIR', self.home / '.claude')) / 'settings.json',
+            'codex': Path(os.environ.get('CODEX_HOME', self.home / '.codex')) / 'hooks.json',
+        }
+        for kind, path in paths.items():
+            if not shutil.which(kind):
+                continue
+            if path.is_symlink():
+                raise RuntimeError(f'Agent hook config is a symlink: {path}')
+            before = path.read_text() if path.exists() else None
+            config = json.loads(before) if before is not None else {}
+            if not isinstance(config, dict) or not isinstance(config.get('hooks', {}), dict):
+                raise RuntimeError(f'Invalid hooks object in {path}')
+            hooks = config.setdefault('hooks', {})
+            helper = shlex.quote(str(self.root / 'lib/agents.py'))
+            cmd = ('if [ -f ' + helper + ' ]; then /usr/bin/timeout --signal=KILL 0.5s ' +
+                   shlex.join([shutil.which('python3'), str(self.root / 'lib/agents.py'),
+                               'record', kind, str(self.state / 'agents')]) +
+                   ' >/dev/null 2>&1 || :; fi')
+            additions = {}
+            for event in ('SessionStart', 'UserPromptSubmit'):
+                rows = hooks.setdefault(event, [])
+                if not isinstance(rows, list):
+                    raise RuntimeError(f'Invalid {event} hooks in {path}')
+                group = {'hooks': [{'type': 'command', 'command': cmd, 'timeout': 1}]}
+                if group not in rows:
+                    rows.append(group)
+                additions[event] = group
+            result.append((path, json.dumps(config, indent=2) + '\n', additions))
+        return result
+
+    @staticmethod
+    def remove_agent_hooks(current, item):
+        config = json.loads(current)
+        hooks = config.get('hooks', {})
+        for event, group in item['agent_hooks'].items():
+            rows = hooks.get(event, [])
+            if group not in rows:
+                raise RuntimeError(f'Managed agent hook was edited in {item["path"]}')
+            rows.remove(group)
+            if not rows:
+                hooks.pop(event, None)
+        if not hooks:
+            config.pop('hooks', None)
+        return None if not config and item['before'] is None else json.dumps(config, indent=2) + '\n'
+
     def lifecycle_files(self):
         # This copy survives deletion of the plugin and can remove its own files.
         cleanup = self.state / 'cleanup.py'
@@ -149,6 +197,20 @@ UMask=0077
                 receipt['files'].append(entry)
             entry['after'] = text
             changes.append((path, text, mode))
+        for path, text, hooks in self.agent_hook_files():
+            entry = next((item for item in receipt['files'] if item['path'] == str(path)), None)
+            if entry is None:
+                entry = {'path': str(path), 'before': path.read_text() if path.exists() else None,
+                         'mode': path.stat().st_mode & 0o777 if path.exists() else 0o600, 'block': None}
+                receipt['files'].append(entry)
+            elif entry.get('agent_hooks') != hooks:
+                raise RuntimeError(f'Agent hook definition changed in {path}; uninstall before updating.')
+            elif path.exists():
+                current_hooks = json.loads(path.read_text()).get('hooks', {})
+                if any(group not in current_hooks.get(event, []) for event, group in hooks.items()):
+                    raise RuntimeError(f'Managed agent hook was edited in {path}; preserve it before updating.')
+            entry.update(after=text, agent_hooks=hooks)
+            changes.append((path, text, entry['mode']))
         for path, text, mode in changes:
             write(path, text, mode)
         write(self.receipt, json.dumps(receipt, indent=2) + '\n')
@@ -203,16 +265,18 @@ UMask=0077
 '''
         entries = []
 
-        def add(path, after, mode=0o600, block=None):
+        def add(path, after, mode=0o600, block=None, hooks=None):
             if path.is_symlink():
                 raise RuntimeError(f'Configuration path is a symlink: {path}')
             before = path.read_text() if path.exists() else None
             if before is not None:
                 mode = path.stat().st_mode & 0o777
-            if block is None and before is not None:
+            if block is None and hooks is None and before is not None:
                 raise RuntimeError(f'An unmanaged file already exists: {path}')
             entries.append({'path': str(path), 'before': before, 'after': after,
                             'mode': mode, 'block': block})
+            if hooks is not None:
+                entries[-1]['agent_hooks'] = hooks
 
         bindings = self.bindings.read_text() if self.bindings.exists() else ''
         block = '\n-- >>> ' + PLUGIN_ID + '\n'
@@ -227,6 +291,8 @@ UMask=0077
             add(path, text, mode)
         add(self.home / '.local/bin/desktop-restore',
             '#!/bin/sh\n# ' + PLUGIN_ID + '\nexec ' + shlex.quote(str(helper)) + ' "$@"\n', 0o700)
+        for path, text, hooks in self.agent_hook_files():
+            add(path, text, hooks=hooks)
         return entries
 
     def start(self):
@@ -282,7 +348,12 @@ UMask=0077
             if not path.exists():
                 continue
             current = path.read_text()
-            if current == item['after']:
+            if item.get('agent_hooks'):
+                updated = self.remove_agent_hooks(current, item)
+                if json.loads(updated or '{}') == json.loads(item['before'] or '{}'):
+                    updated = item['before']
+                changes.append((path, updated, item['mode']))
+            elif current == item['after']:
                 changes.append((path, item['before'], item['mode']))
             elif item['block'] and item['block'] in current:
                 updated = current.replace(item['block'], '', 1)

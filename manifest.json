@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "io.github.dmitry-solomadin.desktop-restore",
   "name": "Desktop Restore",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "author": "dmitry-solomadin",
-  "description": "Restore your desktop workspaces and exact OpenCode sessions after reboot, with fast silent shutdown saves",
+  "description": "Restore desktop workspaces and OpenCode, Codex, Claude Code and herdr sessions with fast silent shutdown saves",
   "kinds": ["service"],
   "entryPoints": { "service": "Service.qml" }
 }

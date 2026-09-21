@@ -1,13 +1,13 @@
 # Desktop Restore
 
 Bring your Omarchy desktop back after reboot: workspaces, terminal directories,
-browser windows, applications, and **the exact OpenCode conversations you left open**.
+browser windows, applications, and **OpenCode, Codex, Claude Code and herdr sessions**.
 
 Restore when you want with **Super+Shift+R** or the CLI. Saving is automatic
 and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
 with Omarchy's normal power action even if saving fails or hangs.
 
-Version **0.1.2** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.2.0** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -18,6 +18,8 @@ Version **0.1.2** · Omarchy 4 / Lua-based Hyprland · MIT license
 - Reopens terminal working directories in independent Ghostty windows.
 - Resolves OpenCode 2 window titles to exact session IDs, including truncated
   titles; ambiguous matches are reported instead of choosing the newest session.
+- Resumes Codex and Claude Code by exact IDs recorded by their native session
+  hooks, and reattaches herdr's default or named persistent sessions.
 - Uses browsers' native last-session recovery and other apps' desktop launchers.
 - Restores missing windows without duplicating already-matched windows.
 - Launches windows directly on their saved workspaces using silent launch rules,
@@ -103,6 +105,50 @@ desktop-restore save --file "$HOME/work-desktop.json"
 desktop-restore restore --file "$HOME/work-desktop.json"
 ```
 
+## Agent sessions
+
+| Agent | How it is restored |
+| --- | --- |
+| OpenCode 2 | Unique window title → exact session ID; `opencode2 --session ID DIRECTORY` |
+| Codex CLI | Process-bound hook record → `codex resume ID` in the recorded directory |
+| Claude Code | Process-bound hook record → `claude --resume ID` in the recorded directory |
+| herdr | `herdr` or `herdr --session NAME`; herdr owns the persisted workspace/tab/pane contents |
+
+When the relevant command is installed, setup adds small **SessionStart** and
+**UserPromptSubmit** hooks to `~/.codex/hooks.json` and `~/.claude/settings.json`.
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` are respected when running setup. Existing
+hooks/settings are preserved, and uninstall removes only this plugin's entries.
+After upgrading or installing an agent later, rerun `desktop-restore install`.
+
+**Codex:** review and trust the new hooks through its `/hooks` screen. The plugin
+does not bypass Codex hook trust. **Claude Code:** restart an already-running
+client so it loads the new hooks. New sessions are recorded at startup, and prompt
+events refresh the record when working in an existing session.
+
+Hooks are silent, bounded to 500 ms, and store only the agent kind, process/boot
+identity, session ID, working directory and timestamp under the private
+`~/.local/state/desktop-restore/agents/` directory. Prompts, responses and credentials
+are not copied. The shutdown saver only reads these local records; it does not
+query or launch an agent. A missing, stale or ambiguous identity is reported,
+never replaced with a "resume latest" guess. An unresolved agent also prevents a
+shutdown save from replacing the previous shutdown checkpoint.
+
+Herdr uses its own persistence. Reopening a client reattaches to a running server,
+or starts its saved session after reboot. Agent-pane conversation recovery depends
+on herdr's official agent integrations and `session.resume_agents_on_restore`
+setting. This plugin does not reconstruct panes or send commands into them.
+Remote and `--no-session` herdr clients are not supported.
+
+Native agent detection follows the terminal's foreground process tree. Prefer
+independent Ghostty windows (`ghostty --gtk-single-instance=false -e codex`, or
+replace `codex` with `claude`/`herdr`). Shared-process windows need an unambiguous
+directory title; ambiguous windows, background/noninteractive agents and remote
+Codex servers are not resumed. Explicit supported model/profile/permission flags
+and custom agent home/config paths are retained; arbitrary launch arguments and
+environment variables are not replayed. Non-persisted conversations cannot be
+recovered after exit. Hidden agent tabs and arbitrary terminal multiplexers are
+outside this adapter's scope.
+
 ## How saving works
 
 The watcher polls every 10 seconds and saves after 20 seconds of stable window
@@ -136,6 +182,7 @@ State lives in `${XDG_STATE_HOME:-~/.local/state}/desktop-restore/`:
 | `restored-windows.json` | Window matching across repeated restores |
 | `last-result.json` | Restore counts and errors |
 | `installation.json` | Setup receipt for removing managed integration |
+| `agents/*.json` | Process-bound Codex/Claude session IDs supplied by hooks |
 
 Checkpoint files are written atomically with mode `0600`; the state directory is
 created with mode `0700`. They contain window titles, directories and launch

@@ -6,7 +6,7 @@
 - Repository: https://github.com/dmitry-solomadin/omarchy-desktop-restore
 - Plugin ID: `io.github.dmitry-solomadin.desktop-restore`
 - Author: `dmitry-solomadin`
-- Version: `0.1.2`
+- Version: `0.2.0`
 - License: MIT
 - Category: System
 
@@ -50,6 +50,15 @@ OpenCode unavailable, and paths containing spaces. Confirm compatibility with
 the OpenCode 2 API version you intend to support.
 
 ## Publishing
+
+Agent adapters have fixture coverage for exact IDs, conversation switching, PID
+reuse and reboot detection, npm wrappers, local Codex app-server children, shared
+terminal ambiguity, herdr names, custom config paths, and shutdown's local-only
+lookup. Setup tests verify that agent hooks preserve other settings across updates
+and uninstall. CLI resume syntax and herdr's native persistence options were
+checked against the locally installed commands. Full real-conversation recovery
+across a reboot needs live testing for each agent/version; these fixture tests do
+not establish it.
 
 1. Review README limitations and setup instructions.
 2. Confirm plugin ID/repository availability in the current marketplace registry.

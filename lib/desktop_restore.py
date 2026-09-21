@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
+from agents import read_process, terminal_agent
 
 HOME = Path.home()
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', HOME / '.config'))
@@ -111,11 +112,9 @@ def processes():
     result = {}
     for path in Path('/proc').glob('[0-9]*'):
         try:
-            stat = (path / 'stat').read_text().rsplit(')', 1)[1].split()
-            cmd = [s.decode(errors='replace') for s in (path / 'cmdline').read_bytes().split(b'\0') if s]
-            if cmd:
-                result[int(path.name)] = {'parent': int(stat[1]), 'cmd': cmd,
-                                         'cwd': os.readlink(path / 'cwd')}
+            proc = read_process(int(path.name))
+            if proc['cmd']:
+                result[int(path.name)] = proc
         except (OSError, ValueError):
             continue
     return result
@@ -221,8 +220,16 @@ def capture(fast=False):
             if executable in TERMINALS or 'terminal*' in c.get('tags', []):
                 w['kind'] = 'terminal'
                 direct_agents = [p for p in children(c['pid'], procs)
-                                 if Path(p['cmd'][0]).name == 'opencode2']
-                if 'OC | ' in c['title']:
+                                  if Path(p['cmd'][0]).name == 'opencode2']
+                try:
+                    agent = terminal_agent(c, procs, STATE / 'agents',
+                                           shared=sum(other['pid'] == c['pid'] for other in clients) > 1)
+                except ValueError:
+                    w['kind'] = 'agent-unresolved'
+                    raise
+                if agent:
+                    w.update(agent)
+                elif 'OC | ' in c['title']:
                     if session_error:
                         raise ValueError(session_error)
                     session = session_for_title(c['title'], available)
@@ -289,12 +296,14 @@ def save_shutdown(target=None, if_shutting_down=False):
         snapshot = capture(fast=True)
         if not snapshot['windows']:
             return
-        if any('OC | ' in w['title'] and w.get('error') for w in snapshot['windows']):
+        if any(('OC | ' in w['title'] or w.get('kind') == 'agent-unresolved') and w.get('error') for w in snapshot['windows']):
             return  # retain the previous checkpoint rather than losing conversations
         write_json(target or STATE / 'shutdown.json', snapshot)
 
 
 def identity(w):
+    if w['kind'] in ('codex', 'claude', 'herdr'):
+        return (w['kind'], w.get('session'), tuple(sorted(w.get('agent_env', {}).items())))
     if w['kind'] == 'opencode':
         return ('opencode', w.get('session'))
     if w['kind'] in ('terminal', 'opencode-home'):

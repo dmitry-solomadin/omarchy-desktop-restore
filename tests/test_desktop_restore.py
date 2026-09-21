@@ -4,10 +4,12 @@ from pathlib import Path
 import tempfile
 import subprocess
 import time
+import sys
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'lib'))
 spec = importlib.util.spec_from_file_location('desktop_restore', ROOT / 'lib/desktop_restore.py')
 app = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(app)

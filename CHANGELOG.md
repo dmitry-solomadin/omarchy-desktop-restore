@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 — 2026-09-21
+
+- Added exact-session restoration for Codex CLI and Claude Code through silent,
+  process-bound native hooks. Records track boot identity and process start time
+  to reject stale sessions and refresh on session start and prompt submission.
+- Added default/named herdr client restoration using herdr's native persistence.
+- Added automatic installation and removal of this plugin's agent hooks, retaining
+  other agent settings and hooks. Codex requires native `/hooks` trust review.
+- Added foreground process detection, npm wrapper handling, local Codex app-server
+  identity lookup, explicit ambiguity errors and cached-only shutdown recovery.
+
 ## 0.1.2 — 2026-09-21
 
 - Removed the bar widget and popup code entirely. Desktop Restore is now a

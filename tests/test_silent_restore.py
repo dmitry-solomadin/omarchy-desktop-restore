@@ -2,8 +2,10 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import sys
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 spec = importlib.util.spec_from_file_location('desktop_restore', Path(__file__).resolve().parents[1] / 'lib/desktop_restore.py')
 app = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(app)

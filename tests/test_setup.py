@@ -21,7 +21,8 @@ class SetupTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
-        env = patch.dict(os.environ, HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / '.config'),
+        env = patch.dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.home / '.codex'),
+                         CLAUDE_CONFIG_DIR=str(self.home / '.claude'), XDG_CONFIG_HOME=str(self.home / '.config'),
                          XDG_STATE_HOME=str(self.home / '.local/state'))
         env.start()
         self.addCleanup(env.stop)
@@ -81,6 +82,22 @@ class SetupTests(unittest.TestCase):
         self.commands.clear()
         self.integration.start()
         self.assertEqual(self.commands, [['systemctl', '--user', 'start', setup.UNIT, setup.LIFECYCLE_UNIT]])
+
+    def test_agent_hooks_keep_user_settings_across_update_and_uninstall(self):
+        path = self.home / '.claude/settings.json'
+        path.parent.mkdir()
+        original = {'model': 'custom', 'hooks': {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'my-hook'}]}]}}
+        path.write_text(json.dumps(original))
+        self.integration.install()
+        current = json.loads(path.read_text())
+        self.assertEqual(len(current['hooks']['SessionStart']), 2)
+        current['theme'] = 'user-change-after-install'
+        path.write_text(json.dumps(current))
+        self.integration.install()
+        self.assertEqual(len(json.loads(path.read_text())['hooks']['SessionStart']), 2)
+        self.integration.uninstall()
+        self.assertEqual(json.loads(path.read_text()), {**original, 'theme': 'user-change-after-install'})
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
 
     def test_custom_power_actions_are_not_overwritten(self):
         self.integration.menu.write_text('{"system.reboot":{"action":"my-own-reboot"}}')
