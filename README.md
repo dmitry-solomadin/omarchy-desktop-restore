@@ -53,7 +53,7 @@ omarchy plugin add https://github.com/dmitry-solomadin/omarchy-desktop-restore -
 The first command installs and enables the background plugin. The second installs the
 watcher, startup hook, restore shortcut, CLI launcher, and power-menu integration.
 Existing custom power actions or a conflicting shortcut must be resolved first.
-See [setup details](docs/setup.md).
+See [power-menu integration](#power-menu-integration) for custom power actions.
 
 ### Install a local checkout
 
@@ -63,7 +63,7 @@ setup, since the installed service refers to that location:
 ```sh
 plugin="$HOME/.config/omarchy/plugins/io.github.dmitry-solomadin.desktop-restore"
 mkdir -p "$plugin"
-cp -a manifest.json Service.qml LICENSE README.md bin lib docs "$plugin/"
+cp -a manifest.json Service.qml LICENSE README.md bin lib "$plugin/"
 omarchy plugin validate "$plugin"
 omarchy-shell shell rescanPlugins
 omarchy plugin enable io.github.dmitry-solomadin.desktop-restore
@@ -167,6 +167,20 @@ metadata. Browser tabs remain in the browser's own session storage.
 - A launch can wait up to 15 seconds for a matching window. Errors appear in CLI
   status and restore output.
 
+## Power-menu integration
+
+Setup adds a marked block to `~/.config/omarchy/extensions/omarchy-menu.jsonc`.
+The **Reboot** and **Shutdown** entries keep their normal labels and icons, but
+run `bin/power-action` first. It silently attempts a checkpoint for at most
+700 ms, then runs Omarchy's original power command regardless of save success.
+If the wrapper is missing, the menu falls back directly to the original command.
+
+Setup refuses to overwrite existing custom reboot/shutdown entries. If you keep
+your own power actions, call the installed `bin/desktop-restore save-shutdown`
+before them to perform the same bounded save. Direct terminal power commands and
+other shortcuts bypass the menu wrapper; the service's late shutdown save is
+best effort. Normal plugin removal cleans up the marked menu block.
+
 ## Remove
 
 Use Omarchy's normal removal command:
@@ -181,8 +195,9 @@ cleanup code. Saved checkpoints and unrelated configuration are retained.
 Disabling the shell plugin or restarting the shell does not trigger removal.
 
 You can still run `desktop-restore uninstall` to remove desktop integration while
-keeping the plugin installed. See [setup details](docs/setup.md) for edited managed
-files and manual cleanup.
+keeping the plugin installed. If you edited managed integration itself, cleanup
+preserves it and reports the conflict in
+`journalctl --user -u omarchy-desktop-restore-lifecycle.service`.
 
 **Upgrading from 0.1.0:** after updating the plugin, run `desktop-restore install`
 once to add automatic removal support to the existing installation.

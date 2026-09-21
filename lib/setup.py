@@ -70,7 +70,7 @@ def menu_block(text, wrapper):
     existing = parse_jsonc(text)
     for key in ('system.reboot', 'system.shutdown'):
         if key in existing:
-            raise RuntimeError(f'{key} is already customized. Integrate the power wrapper manually; see docs/setup.md.')
+            raise RuntimeError(f'{key} is already customized. Integrate the power wrapper manually; see README.md under Power-menu integration.')
     end = jsonc_text(text).rfind('}')
     last = jsonc_text(text[:end]).rstrip()[-1]
     rows = []
