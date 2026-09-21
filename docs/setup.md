@@ -10,6 +10,10 @@ It adds:
 - `~/.local/bin/desktop-restore`: launcher pointing to this plugin's `bin/`.
 - `~/.config/systemd/user/omarchy-desktop-restore.service`: background watcher
   and bounded shutdown-save hook.
+- `~/.config/systemd/user/omarchy-desktop-restore-lifecycle.service`: detects
+  removal of the plugin directory and cleans up the desktop integration.
+- `~/.local/state/desktop-restore/cleanup.py`: a private copy of the setup code
+  that survives plugin-folder deletion long enough to perform cleanup.
 - `~/.config/omarchy/hooks/post-boot.d/desktop-restore`: starts the watcher after
   the desktop environment is ready.
 - A marked block in `~/.config/hypr/bindings.lua`: Super+Shift+R restore binding.
@@ -27,8 +31,9 @@ backups. JSONC comments and unrelated menu entries are preserved. Setup reloads
 Hyprland, checks `hyprctl configerrors`, reloads user systemd units and starts the
 watcher. A failed initial installation rolls back the applied files.
 
-Re-running setup at the same plugin path restarts the watcher. Update source in
-place, then run setup again. If a future release changes the generated integration
+Re-running setup at the same plugin path refreshes the cleanup code and restarts
+both services. This also upgrades installations made before automatic removal was
+available. Update source in place, then run setup again. If a future release changes the generated integration
 format, uninstall and reinstall to regenerate it. To move the plugin, uninstall
 first, move it, and install from the new path.
 
@@ -47,15 +52,33 @@ manually rather than through the setup receipt.
 
 ## Uninstall behavior
 
-Run `desktop-restore uninstall` before `omarchy plugin remove`. The bar widget
-and the separately installed desktop integration have independent lifecycles.
+Run `omarchy plugin remove io.github.dmitry-solomadin.desktop-restore` normally.
+The independent removal monitor checks once per second and waits for the plugin
+directory to remain absent for five seconds, allowing brief directory replacements
+during updates. It then stops the checkpoint watcher and removes all managed
+integration, including its own service and cleanup script. It exits successfully
+instead of restarting. Saved checkpoints and configuration backups remain.
+
+This works even if the widget is disabled, the shell restarts, or the plugin is
+removed while the shell is not running. If the graphical session is stopped,
+cleanup runs after the post-boot hook starts the services on the next login.
+Disabling the widget alone does not uninstall desktop integration.
+
+`desktop-restore uninstall` remains available for immediate cleanup while keeping
+the plugin folder. Existing 0.1.0 installations gain the removal monitor by running
+`desktop-restore install` after updating the plugin.
 
 The receipt records the original text and the exact installed blocks. Uninstall
 restores unchanged managed files and removes its blocks while preserving later
 unrelated additions. If the managed content itself was edited, it stops with the
 file path so those edits can be preserved explicitly; it does not overwrite them.
+Automatic cleanup reports such conflicts in
+`journalctl --user -u omarchy-desktop-restore-lifecycle.service`. The surviving
+`cleanup.py` can be invoked with `python3 ~/.local/state/desktop-restore/cleanup.py uninstall`
+after resolving the conflicting edits.
 
-For manual cleanup, stop `omarchy-desktop-restore.service`, remove its unit,
+For manual cleanup, stop `omarchy-desktop-restore.service` and
+`omarchy-desktop-restore-lifecycle.service`, remove their units, the cleanup script,
 post-boot hook and launcher, and remove the two marked configuration blocks.
 Then run `systemctl --user daemon-reload`, `hyprctl reload`, and
 `hyprctl configerrors`. Delete `installation.json` only once cleanup is complete.

@@ -13,6 +13,7 @@ import time
 
 PLUGIN_ID = 'io.github.dmitry-solomadin.desktop-restore'
 UNIT = 'omarchy-desktop-restore.service'
+LIFECYCLE_UNIT = 'omarchy-desktop-restore-lifecycle.service'
 ROOT = Path(__file__).resolve().parents[1]
 BEGIN = '// >>> ' + PLUGIN_ID
 END = '// <<< ' + PLUGIN_ID
@@ -111,6 +112,63 @@ class Setup:
         self.bindings = self.config / 'hypr/bindings.lua'
         self.menu = self.config / 'omarchy/extensions/omarchy-menu.jsonc'
 
+    def lifecycle_files(self):
+        # This copy survives deletion of the plugin and can remove its own files.
+        cleanup = self.state / 'cleanup.py'
+        unit = f'''# Managed by {PLUGIN_ID}
+[Unit]
+Description=Desktop Restore plugin removal cleanup
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={systemd_arg(shutil.which('python3'))} {systemd_arg(cleanup)} watch-removal
+Environment={json.dumps(('XDG_CONFIG_HOME=' + str(self.config)).replace('%', '%%'), ensure_ascii=False)}
+Environment={json.dumps(('XDG_STATE_HOME=' + str(self.state.parent)).replace('%', '%%'), ensure_ascii=False)}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=1s
+UMask=0077
+'''
+        hook = '#!/bin/sh\n# ' + PLUGIN_ID + '\nexec systemctl --user start ' + LIFECYCLE_UNIT + ' ' + UNIT + '\n'
+        return [(cleanup, Path(__file__).read_text(), 0o600),
+                (self.config / 'systemd/user' / LIFECYCLE_UNIT, unit, 0o600),
+                (self.config / 'omarchy/hooks/post-boot.d/desktop-restore', hook, 0o700)]
+
+    def refresh_lifecycle(self):
+        """Upgrade existing receipts without removing/recreating user integration."""
+        receipt = json.loads(self.receipt.read_text())
+        changes = []
+        for path, text, mode in self.lifecycle_files():
+            entry = next((item for item in receipt['files'] if item['path'] == str(path)), None)
+            if path.is_symlink() or (path.exists() and (entry is None or path.read_text() != entry['after'])):
+                raise RuntimeError(f'Managed content was edited in {path}; preserve it before updating.')
+            if entry is None:
+                entry = {'path': str(path), 'before': None, 'block': None, 'mode': mode}
+                receipt['files'].append(entry)
+            entry['after'] = text
+            changes.append((path, text, mode))
+        for path, text, mode in changes:
+            write(path, text, mode)
+        write(self.receipt, json.dumps(receipt, indent=2) + '\n')
+        run(['systemctl', '--user', 'daemon-reload'])
+
+    def watch_removal(self):
+        """Ignore shell unloads; clean up only after the source folder disappears."""
+        missing_since = None
+        while self.receipt.exists():
+            receipt = json.loads(self.receipt.read_text())
+            root = Path(receipt['root'])
+            if root.is_dir():
+                missing_since = None
+            elif missing_since is None:
+                missing_since = time.monotonic()
+            elif time.monotonic() - missing_since >= 5:
+                self.uninstall(from_monitor=True)
+                return
+            time.sleep(1)
+
     def plan(self):
         if self.receipt.exists():
             receipt = json.loads(self.receipt.read_text())
@@ -165,8 +223,8 @@ UMask=0077
         menu, block = menu_block(self.menu.read_text() if self.menu.exists() else '{}\n', self.root / 'bin/power-action')
         add(self.menu, menu, block=block)
         add(self.config / 'systemd/user' / UNIT, unit)
-        add(self.config / 'omarchy/hooks/post-boot.d/desktop-restore',
-            '#!/bin/sh\n# ' + PLUGIN_ID + '\nexec systemctl --user start ' + UNIT + '\n', 0o700)
+        for path, text, mode in self.lifecycle_files():
+            add(path, text, mode)
         add(self.home / '.local/bin/desktop-restore',
             '#!/bin/sh\n# ' + PLUGIN_ID + '\nexec ' + shlex.quote(str(helper)) + ' "$@"\n', 0o700)
         return entries
@@ -174,7 +232,8 @@ UMask=0077
     def install(self):
         entries = self.plan()
         if entries is None:
-            run(['systemctl', '--user', 'restart', UNIT])
+            self.refresh_lifecycle()
+            run(['systemctl', '--user', 'restart', UNIT, LIFECYCLE_UNIT])
             print('Desktop Restore integration already installed; watcher restarted.')
             return
         stamp = str(time.time_ns())
@@ -191,10 +250,11 @@ UMask=0077
             if errors:
                 raise RuntimeError(errors)
             run(['systemctl', '--user', 'daemon-reload'])
-            run(['systemctl', '--user', 'start', UNIT])
             write(self.receipt, json.dumps({'root': str(self.root), 'files': entries}, indent=2) + '\n')
+            run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
         except Exception:
-            subprocess.run(['systemctl', '--user', 'stop', UNIT], capture_output=True, timeout=5)
+            subprocess.run(['systemctl', '--user', 'stop', UNIT, LIFECYCLE_UNIT], capture_output=True, timeout=5)
+            self.receipt.unlink(missing_ok=True)
             for item in reversed(applied):
                 path = Path(item['path'])
                 if item['before'] is None:
@@ -206,7 +266,7 @@ UMask=0077
             raise
         print('Installed. Super+Shift+R restores; reboot/shutdown save silently with a 700 ms cutoff.')
 
-    def uninstall(self):
+    def uninstall(self, from_monitor=False):
         if not self.receipt.exists():
             print('Desktop Restore integration is not installed.')
             return
@@ -232,6 +292,8 @@ UMask=0077
             else:
                 raise RuntimeError(f'Managed content was edited in {path}; preserve those changes before uninstalling.')
         run(['systemctl', '--user', 'stop', UNIT])
+        if not from_monitor and (self.config / 'systemd/user' / LIFECYCLE_UNIT).exists():
+            run(['systemctl', '--user', 'stop', LIFECYCLE_UNIT])
         for path, text, mode in changes:
             if text is None:
                 path.unlink(missing_ok=True)
@@ -249,10 +311,10 @@ UMask=0077
 if __name__ == '__main__':
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['install', 'uninstall'])
+    parser.add_argument('command', choices=['install', 'uninstall', 'watch-removal'])
     args = parser.parse_args()
     try:
-        getattr(Setup(), args.command)()
+        getattr(Setup(), args.command.replace('-', '_'))()
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

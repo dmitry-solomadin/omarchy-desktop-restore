@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.dmitry-solomadin.desktop-restore",
   "name": "Desktop Restore",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "dmitry-solomadin",
   "description": "Restore your desktop workspaces and exact OpenCode sessions after reboot, with fast silent shutdown saves",
   "kinds": ["bar-widget"],

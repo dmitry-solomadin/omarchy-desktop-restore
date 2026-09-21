@@ -7,7 +7,7 @@ Restore when you want with **Super+Shift+R** or the bar panel. Saving is automat
 and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
 with Omarchy's normal power action even if saving fails or hangs.
 
-Version **0.1.0** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.1.1** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -170,16 +170,23 @@ metadata. Browser tabs remain in the browser's own session storage.
 
 ## Remove
 
-Run uninstall **before removing the plugin folder**:
+Use Omarchy's normal removal command:
 
 ```sh
-desktop-restore uninstall
 omarchy plugin remove io.github.dmitry-solomadin.desktop-restore
 ```
 
-Uninstall removes the managed shortcut, menu overrides, service, startup hook,
-and CLI launcher. Unrelated configuration changes and checkpoints are retained.
-See [setup details](docs/setup.md) for edited managed files and manual cleanup.
+Within about six seconds, the removal monitor stops the watcher and removes the
+managed shortcut, menu overrides, services, startup hook, CLI launcher, and its own
+cleanup code. Saved checkpoints and unrelated configuration are retained.
+Disabling the bar widget or restarting the shell does not trigger removal.
+
+You can still run `desktop-restore uninstall` to remove desktop integration while
+keeping the plugin installed. See [setup details](docs/setup.md) for edited managed
+files and manual cleanup.
+
+**Upgrading from 0.1.0:** after updating the plugin, run `desktop-restore install`
+once to add automatic removal support to the existing installation.
 
 ## Development
 

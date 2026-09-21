@@ -2,12 +2,15 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+REAL_RUN = subprocess.run
 spec = importlib.util.spec_from_file_location('setup', ROOT / 'lib/setup.py')
 setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
@@ -122,6 +125,73 @@ class SetupTests(unittest.TestCase):
             self.integration.uninstall()
         self.assertIn('custom', launcher.read_text())
         self.assertTrue(self.integration.receipt.exists())
+
+    def test_plugin_folder_removal_cleans_up_using_surviving_helper(self):
+        self.integration.root.mkdir()
+        self.integration.install()
+        saved = self.integration.state / 'restore.json'
+        saved.write_text('{"windows": ["keep this checkpoint"]}')
+        helper = self.integration.state / 'cleanup.py'
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        for command in ('hyprctl', 'systemctl'):
+            path = fakebin / command
+            path.write_text('#!/bin/sh\nexit 0\n')
+            path.chmod(0o700)
+        # The remover and its source folder are gone before the monitor starts.
+        # Only the installed cleanup copy and receipt remain available.
+        shutil.rmtree(self.integration.root)
+        result = REAL_RUN([sys.executable, '-B', str(helper), 'watch-removal'],
+                          env={**os.environ, 'PATH': str(fakebin) + ':' + os.environ['PATH']},
+                          capture_output=True, text=True, timeout=12)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(helper.exists())
+        self.assertFalse(self.integration.receipt.exists())
+        self.assertFalse((self.home / '.config/systemd/user' / setup.UNIT).exists())
+        self.assertFalse((self.home / '.config/systemd/user' / setup.LIFECYCLE_UNIT).exists())
+        self.assertFalse((self.home / '.local/bin/desktop-restore').exists())
+        self.assertFalse((self.home / '.config/omarchy/hooks/post-boot.d/desktop-restore').exists())
+        self.assertEqual(self.integration.menu.read_text(), self.original_menu)
+        self.assertEqual(self.integration.bindings.read_text(), '-- My keybindings\n')
+        self.assertIn('keep this checkpoint', saved.read_text())
+
+    def test_monitor_ignores_shell_disable_and_brief_folder_replacement(self):
+        self.integration.root.mkdir()
+        self.integration.install()
+        calls = 0
+
+        def step(_):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.integration.root.rmdir()
+            elif calls == 2:
+                self.integration.root.mkdir()
+            elif calls == 3:
+                raise InterruptedError('end test')
+
+        with patch.object(setup.time, 'sleep', side_effect=step), patch.object(self.integration, 'uninstall') as uninstall:
+            with self.assertRaises(InterruptedError):
+                self.integration.watch_removal()
+        uninstall.assert_not_called()
+        self.assertTrue(self.integration.receipt.exists())
+
+    def test_existing_installation_gets_lifecycle_upgrade_without_rewriting_bindings(self):
+        self.integration.install()
+        receipt = json.loads(self.integration.receipt.read_text())
+        for path, _, _ in self.integration.lifecycle_files():
+            if path.name != 'desktop-restore':
+                path.unlink()
+                receipt['files'] = [entry for entry in receipt['files'] if entry['path'] != str(path)]
+        self.integration.receipt.write_text(json.dumps(receipt))
+        bindings = self.integration.bindings.read_text() + '-- new user setting\n'
+        self.integration.bindings.write_text(bindings)
+        self.integration.install()
+        self.assertEqual(self.integration.bindings.read_text(), bindings)
+        self.assertTrue((self.integration.state / 'cleanup.py').exists())
+        self.assertTrue((self.home / '.config/systemd/user' / setup.LIFECYCLE_UNIT).exists())
+        self.integration.uninstall()
+        self.assertIn('new user setting', self.integration.bindings.read_text())
 
 
 if __name__ == '__main__':

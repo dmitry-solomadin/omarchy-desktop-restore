@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.1 — 2026-09-21
+
+- Normal `omarchy plugin remove` now automatically removes the desktop integration
+  within about six seconds, retaining saved checkpoints.
+- An independent removal monitor and private cleanup copy survive deletion of the
+  plugin folder. Shell reloads, widget disabling and brief folder replacements do
+  not uninstall the integration.
+- Re-running setup upgrades existing installations with automatic removal support.
+- Added integration coverage for cleanup after the source folder has disappeared,
+  temporary folder replacement, and upgrading existing setup receipts.
+
 ## 0.1.0 — 2026-09-21
 
 Initial public source release.
