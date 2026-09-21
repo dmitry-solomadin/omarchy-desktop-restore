@@ -89,6 +89,25 @@ class AgentTests(unittest.TestCase):
         self.metadata()
         self.assertEqual(agents.terminal_agent(self.window, self.procs, self.state, shared=True)['kind'], 'codex')
 
+    def test_shared_claude_window_and_plain_shell_are_matched_one_to_one(self):
+        self.procs[12]['cmd'] = ['claude']
+        self.procs[20] = proc(10, ['zsh'], cwd='/other')
+        self.metadata(kind='claude')
+        claude = {**self.window, 'address': 'agent', 'title': '✳ my named conversation'}
+        shell = {**self.window, 'address': 'shell', 'title': '/other'}
+        for siblings in ([claude, shell], [shell, claude]):
+            result = agents.terminal_agent(claude, self.procs, self.state, shared=True, siblings=siblings)
+            self.assertEqual(result['kind'], 'claude')
+            self.assertIsNone(agents.terminal_agent(shell, self.procs, self.state, shared=True, siblings=siblings))
+
+    def test_elimination_does_not_guess_when_a_hidden_terminal_branch_exists(self):
+        self.procs[20] = proc(10, ['zsh'], cwd='/other')
+        self.procs[21] = proc(10, ['zsh'], cwd='/hidden')
+        agent = {**self.window, 'title': 'agent title'}
+        shell = {**self.window, 'title': '/other'}
+        with self.assertRaisesRegex(ValueError, 'shared-process'):
+            agents.terminal_agent(agent, self.procs, self.state, shared=True, siblings=[agent, shell])
+
     def test_background_and_noninteractive_agents_are_not_restored(self):
         self.procs[12]['tpgid'] = 99
         self.assertIsNone(agents.terminal_agent(self.window, self.procs, self.state))

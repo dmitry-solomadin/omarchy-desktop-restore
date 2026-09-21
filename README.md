@@ -7,7 +7,7 @@ Restore when you want with **Super+Shift+R** or the CLI. Saving is automatic
 and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
 with Omarchy's normal power action even if saving fails or hangs.
 
-Version **0.2.0** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.2.1** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -141,8 +141,10 @@ Remote and `--no-session` herdr clients are not supported.
 
 Native agent detection follows the terminal's foreground process tree. Prefer
 independent Ghostty windows (`ghostty --gtk-single-instance=false -e codex`, or
-replace `codex` with `claude`/`herdr`). Shared-process windows need an unambiguous
-directory title; ambiguous windows, background/noninteractive agents and remote
+replace `codex` with `claude`/`herdr`). Shared-process windows are matched one-to-one
+using shell directory titles; a single remaining window and shell can then be
+paired even when the agent has its own title. Ambiguous windows, hidden unmatched
+terminal branches, background/noninteractive agents and remote
 Codex servers are not resumed. Explicit supported model/profile/permission flags
 and custom agent home/config paths are retained; arbitrary launch arguments and
 environment variables are not replayed. Non-persisted conversations cannot be

@@ -124,7 +124,37 @@ def herdr_session(args):
     raise ValueError('Cannot identify this herdr client session')
 
 
-def terminal_agent(window, procs, state, shared=False):
+def terminal_branch(window, procs, siblings):
+    """Match windows to terminal child branches, not to the shared GUI PID."""
+    roots = {pid: proc for pid, proc in procs.items()
+             if proc['parent'] == window['pid'] and proc.get('tty')}
+    windows = list(siblings)
+    assignments = {}
+    choices = {}
+    for index, sibling in enumerate(windows):
+        title = os.path.expanduser(sibling['title'])
+        if Path(title).is_absolute():
+            choices[index] = {pid for pid, proc in roots.items() if proc['cwd'] == title}
+    # Assign only unique pairs. Two windows/branches with the same directory
+    # cannot be distinguished by iteration order.
+    for index, possible in choices.items():
+        if len(possible) == 1:
+            pid = next(iter(possible))
+            if sum(pid in values for values in choices.values()) == 1:
+                assignments[index] = pid
+    remaining_windows = [i for i in range(len(windows)) if i not in assignments]
+    remaining_roots = set(roots) - set(assignments.values())
+    if len(windows) == len(roots) and len(remaining_windows) == len(remaining_roots) == 1:
+        assignments[remaining_windows[0]] = remaining_roots.pop()
+    for index, sibling in enumerate(windows):
+        if sibling is window or (window.get('address') and sibling.get('address') == window['address']):
+            if index in assignments:
+                return assignments[index]
+            break
+    raise ValueError('Cannot map agent to a shared-process terminal window; use an independent terminal process')
+
+
+def terminal_agent(window, procs, state, shared=False, siblings=None):
     candidates = []
     for pid in descendants(window['pid'], procs):
         proc = procs[pid]
@@ -153,13 +183,11 @@ def terminal_agent(window, procs, state, shared=False):
     candidates = [c for c in candidates if not (Path(procs[c[0]]['cmd'][0]).name in ('node', 'nodejs', 'bun')
                   and any(other[1] == c[1] and other[0] in descendants(c[0], procs) for other in candidates if other != c))]
     if shared:
-        title = str(Path(os.path.expanduser(window['title'])))
-        matches = [c for c in candidates if procs[c[0]]['cwd'] == title]
-        # A directory shared by multiple terminal branches is still ambiguous.
-        branches = [p for p in procs.values() if p['parent'] == window['pid'] and p['cwd'] == title]
-        if len(matches) != 1 or len(branches) != 1:
-            raise ValueError('Cannot map agent to a shared-process terminal window; use an independent terminal process')
-        candidates = matches
+        root = terminal_branch(window, procs, siblings or [window])
+        branch = descendants(root, procs) | {root}
+        candidates = [c for c in candidates if c[0] in branch]
+        if not candidates:
+            return None  # This is a plain shell; another window owns the agent.
     if len(candidates) != 1:
         raise ValueError('Multiple interactive agents in this terminal; cannot identify the visible session')
     pid, kind, args = candidates[0]

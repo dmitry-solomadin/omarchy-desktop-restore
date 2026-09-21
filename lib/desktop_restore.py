@@ -223,7 +223,8 @@ def capture(fast=False):
                                   if Path(p['cmd'][0]).name == 'opencode2']
                 try:
                     agent = terminal_agent(c, procs, STATE / 'agents',
-                                           shared=sum(other['pid'] == c['pid'] for other in clients) > 1)
+                                           shared=sum(other['pid'] == c['pid'] for other in clients) > 1,
+                                           siblings=[other for other in clients if other['pid'] == c['pid']])
                 except ValueError:
                     w['kind'] = 'agent-unresolved'
                     raise

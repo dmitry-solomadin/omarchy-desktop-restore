@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 — 2026-09-21
+
+- Fixed agent detection in shared Ghostty processes: pair directory-titled windows
+  with their shell branches, then resolve a single remaining pair by elimination.
+  A neighboring plain shell is no longer incorrectly marked as an unresolved agent.
+- Retain explicit ambiguity errors for duplicate directories and hidden branches.
+
 ## 0.2.0 — 2026-09-21
 
 - Added exact-session restoration for Codex CLI and Claude Code through silent,
