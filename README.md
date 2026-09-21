@@ -1,0 +1,204 @@
+# Desktop Restore
+
+Bring your Omarchy desktop back after reboot: workspaces, terminal directories,
+browser windows, applications, and **the exact OpenCode conversations you left open**.
+
+Restore when you want with **Super+Shift+R** or the bar panel. Saving is automatic
+and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
+with Omarchy's normal power action even if saving fails or hangs.
+
+Version **0.1.0** · Omarchy 4 / Lua-based Hyprland · MIT license
+
+[![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
+
+## Features
+
+- Checkpoints across all workspaces, including named and special workspaces.
+- Restores workspaces, connected monitors, floating geometry and fullscreen state.
+- Reopens terminal working directories in independent Ghostty windows.
+- Resolves OpenCode 2 window titles to exact session IDs, including truncated
+  titles; ambiguous matches are reported instead of choosing the newest session.
+- Uses browsers' native last-session recovery and other apps' desktop launchers.
+- Restores missing windows without duplicating already-matched windows.
+- Launches windows directly on their saved workspaces using silent launch rules,
+  preventing initial focus. A reversible activation guard expires after 20 seconds
+  so later link clicks can focus the browser normally.
+- Desktop-launcher apps such as Signal also receive a temporary class-matching
+  rule, covering launchers or existing background processes that lose the launch
+  token. The compositor disables this rule after 20 seconds, even if restore exits.
+- A small bar panel shows the restore checkpoint and restore results.
+- User-level installation, backups, rollback on setup failure, and uninstall.
+- Python standard library only; no pip dependencies.
+
+## Requirements
+
+Developed against **Omarchy 4.0.4 / Hyprland 0.56.2** and its Lua dispatch API.
+Legacy Hyprland `.conf` configurations are not supported.
+
+Required commands: `python3` (3.10+), `hyprctl`, `ghostty`, `uwsm-app`, `gio`,
+`systemctl`, `busctl`, and GNU `timeout`. The bar panel requires Omarchy's
+Quickshell shell. **`opencode2` is optional**, required only for OpenCode recovery;
+the adapter targets its V2 session API. Terminal restoration currently uses
+Ghostty even if the original terminal used another supported emulator.
+
+## Install
+
+Run inside your Omarchy desktop session:
+
+```sh
+omarchy plugin add https://github.com/dmitry-solomadin/omarchy-desktop-restore --enable
+"$HOME/.config/omarchy/plugins/io.github.dmitry-solomadin.desktop-restore/bin/desktop-restore" install
+```
+
+The first command installs and enables the bar widget. The second installs the
+watcher, startup hook, restore shortcut, CLI launcher, and power-menu integration.
+Existing custom power actions or a conflicting shortcut must be resolved first.
+See [setup and migration](docs/setup.md), including migration from the original
+local helper.
+
+### Install a local checkout
+
+From the project directory, copy it to its permanent location before running
+setup, since the installed service refers to that location:
+
+```sh
+plugin="$HOME/.config/omarchy/plugins/io.github.dmitry-solomadin.desktop-restore"
+mkdir -p "$plugin"
+cp -a manifest.json DesktopRestore.qml LICENSE README.md bin lib docs "$plugin/"
+omarchy plugin validate "$plugin"
+omarchy-shell shell rescanPlugins
+omarchy plugin enable io.github.dmitry-solomadin.desktop-restore --section right
+"$plugin/bin/desktop-restore" install
+```
+
+Enabling the bar widget alone does not install the desktop integration. Disabling
+the widget hides the panel; use `desktop-restore uninstall` to stop the background
+integration. The watcher runs independently of the shell, including shell restarts.
+
+## Use
+
+1. Work normally. Automatic checkpoints settle about 20–30 seconds after changes.
+2. Reboot or shut down through Omarchy's menu for a final pre-teardown checkpoint.
+3. After logging in, press **Super+Shift+R**, or click the bar icon and choose
+   **Restore missing windows**.
+
+There is no save shortcut or desktop notification. The panel supports **R** to
+restore and **Escape** to close. Already-open matching windows stay where you
+have placed them.
+Restoration never returns focus to the starting window when it finishes. You can
+switch to another workspace or a newly restored window while restoration runs.
+
+```sh
+desktop-restore status
+desktop-restore status --json
+desktop-restore restore --dry-run
+desktop-restore restore
+systemctl --user status omarchy-desktop-restore.service
+journalctl --user -u omarchy-desktop-restore.service
+```
+
+For an explicit checkpoint, run `desktop-restore save`. This replaces the current
+restore target. Named snapshots use `--file`:
+
+```sh
+desktop-restore save --file "$HOME/work-desktop.json"
+desktop-restore restore --file "$HOME/work-desktop.json"
+```
+
+## How saving works
+
+The watcher polls every 10 seconds and saves after 20 seconds of stable window
+state. Empty desktops never overwrite a checkpoint. Intentional closures left
+stable for that interval become the new rolling checkpoint.
+
+The power-menu wrapper saves before Omarchy starts closing windows. It uses only
+cached OpenCode metadata, never starts/contacts OpenCode, and takes locks without
+waiting. GNU `timeout --signal=KILL 0.7s` bounds the saver and its process group.
+The wrapper always proceeds to the original power command. If the cache cannot
+identify an OpenCode conversation, the previous shutdown checkpoint is retained.
+The cutoff bounds the save attempt, not the duration of reboot itself.
+
+A systemd stop hook attempts a final save only when logind reports an actual
+system shutdown, with a one-second service-stop limit. It preserves the menu's
+checkpoint. Direct reboot/poweroff paths are best effort: windows may already
+have closed before this hook, so menu shutdown is the preferred path.
+
+On a new login, the preceding login's shutdown checkpoint—or its rolling
+checkpoint—is frozen as the restore target before new autosaves begin. Opening
+a terminal after login therefore does not erase the desktop you want to restore.
+
+State lives in `${XDG_STATE_HOME:-~/.local/state}/desktop-restore/`:
+
+| File | Purpose |
+| --- | --- |
+| `latest.json` | Rolling automatic checkpoint |
+| `restore.json` | Frozen restore target for this login |
+| `shutdown.json` | Last successful shutdown checkpoint |
+| `sessions-cache.json` | OpenCode session IDs, titles and locations |
+| `restored-windows.json` | Window matching across repeated restores |
+| `last-result.json` | Restore counts and errors |
+| `installation.json` | Setup receipt for removing managed integration |
+
+Checkpoint files are written atomically with mode `0600`; the state directory is
+created with mode `0700`. They contain window titles, directories and launch
+metadata. Browser tabs remain in the browser's own session storage.
+
+## Restoration limits
+
+- This relaunches applications, not process memory: no terminal jobs, SSH
+  connections, scrollback, unsaved buffers or terminal splits.
+- Tiled windows use the current layout and spatial launch order. Exact split
+  trees, ratios and Hyprland groups are not reconstructed.
+- OpenCode captures the visible TUI conversation. Hidden TUI tabs, remote and
+  standalone servers are outside this adapter's scope. Duplicate/truncated titles
+  that identify multiple sessions need unique names before saving.
+- Terminal directory recovery uses shell-integration directory titles, or one
+  identifiable direct shell child. Ambiguous shared-process windows are skipped.
+- Supported browser classes include Chrome, Chromium, Brave, Firefox and Zen.
+  Recovery depends on what the browser saved during shutdown; this plugin does
+  not preserve browser process memory or force a clean multi-window browser exit.
+  Profiles passed through supported command-line flags are retained. Private
+  windows are not recoverable through normal browser session storage.
+- Browser placement uses active-tab titles, then window order, so it can be
+  approximate. Multiple windows recovered by one browser launch initially share
+  that launch's saved workspace; any other saved destinations are corrected
+  without following the windows. If a browser is already running, missing windows are reported for
+  recovery through History rather than launching another whole-browser restore.
+- Other applications need identifiable XDG desktop launchers. Internal documents
+  and views depend on each app's own recovery support.
+- A launch can wait up to 15 seconds for a matching window. Errors appear in CLI
+  status and the panel's restore output.
+
+## Remove
+
+Run uninstall **before removing the plugin folder**:
+
+```sh
+desktop-restore uninstall
+omarchy plugin remove io.github.dmitry-solomadin.desktop-restore
+```
+
+Uninstall removes the managed shortcut, menu overrides, service, startup hook,
+and CLI launcher. Unrelated configuration changes and checkpoints are retained.
+See [setup details](docs/setup.md) for edited managed files and manual cleanup.
+
+## Development
+
+```sh
+python3 -m unittest discover -s tests -v
+omarchy plugin validate .
+sh -n bin/desktop-restore
+sh -n bin/power-action
+```
+
+The tests isolate state and replace power commands with harmless substitutes.
+See [release preparation](RELEASING.md) for validation coverage and publishing.
+
+## Feedback
+
+[Report a bug or request a feature](https://github.com/dmitry-solomadin/omarchy-desktop-restore/issues).
+Include your Omarchy and Hyprland versions, the app involved, and whether you
+restored through the shortcut or panel. Review diagnostic output before sharing:
+checkpoint files can contain private window titles, directories and session IDs.
+
+See [CHANGELOG.md](CHANGELOG.md) for changes. Licensed under [MIT](LICENSE).

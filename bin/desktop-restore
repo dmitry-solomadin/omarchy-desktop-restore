@@ -1,0 +1,13 @@
+#!/bin/sh
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 1
+case "${1:-}" in
+    install|uninstall)
+        exec python3 "$ROOT/lib/setup.py" "$@"
+        ;;
+    save-shutdown)
+        # The bound includes Python startup and every descendant process.
+        /usr/bin/timeout --signal=KILL 0.7s python3 "$ROOT/lib/desktop_restore.py" "$@" \
+            </dev/null >/dev/null 2>&1 || :
+        ;;
+    *) exec python3 "$ROOT/lib/desktop_restore.py" "$@" ;;
+esac

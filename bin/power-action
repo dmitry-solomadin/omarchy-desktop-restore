@@ -1,0 +1,13 @@
+#!/bin/sh
+# Fail-open: nothing in the optional save may gate the original power action.
+case "${1:-}" in
+    reboot|shutdown) action="$1" ;;
+    *) exit 2 ;;
+esac
+
+# Resolve the helper locally; a missing/moved plugin still reaches Omarchy.
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+/usr/bin/timeout --signal=KILL 0.7s python3 "$ROOT/lib/desktop_restore.py" save-shutdown \
+    </dev/null >/dev/null 2>&1 || :
+
+exec "${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-system-$action"
