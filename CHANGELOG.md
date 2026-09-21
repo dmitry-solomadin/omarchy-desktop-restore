@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1 — 2026-09-21
+
+- Cross-checked herdr restoration with wbarakat/omarchy-session-restore and
+  herdr 0.8.2 source. Honor `HERDR_SESSION`, explicit-name precedence and last
+  `--session` option; validate names and reject unsupported custom-socket clients.
+- Reject management commands with global session flags instead of treating them
+  as attach clients. Added six regression tests and an isolated live cold-server
+  restart check for an environment-selected named session.
+- Document required native herdr integrations for agent-pane conversation recovery
+  and distinguish live-server reattachment from cold-start restoration.
+
 ## 0.3.0 — 2026-09-21
 
 - Restore terminals in their original emulator: native Ghostty, Foot/footclient,

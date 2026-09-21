@@ -153,6 +153,38 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(app.identity({'kind': 'herdr', 'session': None}),
                          app.identity({'kind': 'herdr', 'session': 'default'}))
 
+    def test_herdr_environment_selected_session_is_restored_explicitly(self):
+        self.procs[12]['cmd'] = ['herdr']
+        with patch.object(agents, 'process_env', return_value={'HERDR_SESSION': 'project'}):
+            result = agents.terminal_agent(self.window, self.procs, self.state)
+        self.assertEqual(result['session'], 'project')
+        self.assertEqual(result['argv'], ['herdr', '--session', 'project'])
+        self.assertEqual(result['agent_env'], {})
+
+    def test_herdr_explicit_session_overrides_environment_and_socket(self):
+        env = {'HERDR_SESSION': 'inherited', 'HERDR_SOCKET_PATH': '/tmp/inherited.sock'}
+        for args in (['--session', 'work'], ['session', 'attach', 'work'], ['--session=work']):
+            self.assertEqual(agents.herdr_session(args, env), 'work')
+        self.assertEqual(agents.herdr_session(['--session', 'default'], env), 'default')
+
+    def test_herdr_last_session_option_wins_like_native_parser(self):
+        self.assertEqual(agents.herdr_session(['--session', 'old', '--session=new', '--handoff']), 'new')
+
+    def test_herdr_custom_socket_is_not_replaced_by_default_session(self):
+        with self.assertRaisesRegex(ValueError, 'Custom-socket'):
+            agents.herdr_session([], {'HERDR_SOCKET_PATH': '/tmp/custom.sock', 'HERDR_SESSION': 'work'})
+
+    def test_herdr_management_commands_are_not_misread_as_clients(self):
+        for args in (['--session', 'work', 'server'], ['--session=work', 'api', 'snapshot'],
+                     ['agent', 'start', '--', 'claude', '--session', 'child']):
+            with self.assertRaisesRegex(ValueError, 'Cannot identify'):
+                agents.herdr_session(args)
+
+    def test_herdr_invalid_names_are_rejected(self):
+        for name in ('', '.', '..', '../work', 'a b', 'a' * 65):
+            with self.assertRaisesRegex(ValueError, 'Invalid'):
+                agents.herdr_session(['--session', name])
+
     def test_remote_and_monolithic_herdr_are_explicitly_rejected(self):
         for args in (['--remote', 'host'], ['--no-session']):
             self.procs[12]['cmd'] = ['herdr'] + args

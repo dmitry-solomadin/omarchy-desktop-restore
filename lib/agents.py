@@ -53,7 +53,8 @@ def descendants(pid, procs):
 
 def process_env(pid):
     # Never copy credentials or the agent's full environment into checkpoints.
-    wanted = {b'CODEX_HOME', b'CLAUDE_CONFIG_DIR', b'HERDR_CONFIG_PATH', b'XDG_CONFIG_HOME'}
+    wanted = {b'CODEX_HOME', b'CLAUDE_CONFIG_DIR', b'HERDR_CONFIG_PATH', b'XDG_CONFIG_HOME',
+              b'HERDR_SESSION', b'HERDR_SOCKET_PATH'}
     try:
         return {key.decode(): value.decode() for entry in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
                 if b'=' in entry for key, value in [entry.split(b'=', 1)] if key in wanted}
@@ -111,19 +112,37 @@ def options(args, valued, flags):
     return result
 
 
-def herdr_session(args):
+def herdr_session(args, env=None):
+    """Follow herdr 0.8.2 src/session.rs session-selection precedence."""
+    env = env or {}
     if '--remote' in args or any(a.startswith('--remote=') for a in args) or '--no-session' in args:
         raise ValueError('Remote and --no-session herdr clients are not supported')
-    for index, arg in enumerate(args):
-        if arg.startswith('--session='):
-            return arg.split('=', 1)[1]
-        if arg == '--session' and index + 1 < len(args):
-            return args[index + 1]
-    if args[:2] == ['session', 'attach'] and len(args) == 3:
-        return args[2]
-    if not args or all(a in ('--handoff',) for a in args):
-        return None
-    raise ValueError('Cannot identify this herdr client session')
+    selected = None
+    if args[:2] == ['session', 'attach']:
+        if len(args) != 3:
+            raise ValueError('Cannot identify this herdr client session')
+        selected = args[2]
+    else:
+        index = 0
+        while index < len(args):
+            arg = args[index]
+            if arg == '--session' and index + 1 < len(args):
+                index += 1
+                selected = args[index]
+            elif arg.startswith('--session='):
+                selected = arg.split('=', 1)[1]
+            elif arg != '--handoff':
+                raise ValueError('Cannot identify this herdr client session')
+            index += 1
+    # Explicit names override the inherited socket; a socket-only client cannot
+    # be safely converted into a named local session after reboot.
+    if selected is None:
+        if 'HERDR_SOCKET_PATH' in env:
+            raise ValueError('Custom-socket herdr clients require an explicit --session for restoration')
+        selected = env.get('HERDR_SESSION', 'default')
+    if not re.fullmatch(r'[A-Za-z0-9._-]{1,64}', selected) or selected in ('.', '..'):
+        raise ValueError('Invalid herdr session name')
+    return selected
 
 
 def codex_mode(args):
@@ -220,7 +239,7 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
     proc = procs[pid]
     env = process_env(pid)
     if kind == 'herdr':
-        session = herdr_session(args) or 'default'
+        session = herdr_session(args, env)
         argv = ['herdr', '--session', session]
         cwd = proc['cwd']
         env = {k: v for k, v in env.items() if k in ('HERDR_CONFIG_PATH', 'XDG_CONFIG_HOME')}

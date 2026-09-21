@@ -7,7 +7,7 @@ Restore when you want with **Super+Shift+R** or the CLI. Saving is automatic
 and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
 with Omarchy's normal power action even if saving fails or hangs.
 
-Version **0.3.0** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.3.1** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -166,6 +166,38 @@ or starts its saved session after reboot. Agent-pane conversation recovery depen
 on herdr's official agent integrations and `session.resume_agents_on_restore`
 setting. This plugin does not reconstruct panes or send commands into them.
 Remote and `--no-session` herdr clients are not supported.
+
+Herdr session selection follows its native precedence: an explicit `--session`
+or `session attach` name wins; otherwise `HERDR_SESSION` selects the session,
+falling back to `default`. Repeated `--session` options use the last value.
+Custom-socket clients using `HERDR_SOCKET_PATH` without an explicit session are
+reported as unsupported rather than reopened in an unrelated default session.
+
+**Herdr pane recovery needs separate setup.** Desktop Restore's Codex/Claude hooks
+identify standalone terminal conversations; they do not register native pane
+session references with herdr. Check and install herdr's official integrations:
+
+```bash
+herdr integration status
+herdr integration install claude
+herdr integration install codex
+```
+
+Restart the agents inside herdr after installation so they report their session
+IDs; follow any native Codex hook trust prompts. For herdr 0.8.2, Claude integration
+version 6+ and Codex integration version 5+ are required. These integrations are
+managed by herdr, separately from this plugin. Agents without a valid native
+session reference return as shells after a server restart, even if reconnecting
+to the still-running server previously worked.
+
+The herdr adapter was cross-checked against
+[wbarakat/omarchy-session-restore](https://github.com/wbarakat/omarchy-session-restore/blob/main/bin/omarchy-session-restore-agents)
+and [herdr 0.8.2 session selection](https://github.com/herdrdev/herdr/blob/v0.8.2/src/session.rs).
+That plugin saves agent kind/pane/cwd and runs Claude with `--continue` (other
+agents start fresh). Desktop Restore delegates pane recovery to herdr's native
+exact-session references to avoid selecting a different conversation by cwd.
+An isolated live test also verified an environment-selected named session after
+stopping its server and reopening it, with silent workspace placement.
 
 Native agent detection follows the terminal's foreground process tree. Prefer
 independent Ghostty windows (`ghostty --gtk-single-instance=false -e codex`, or

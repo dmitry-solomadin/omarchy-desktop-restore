@@ -6,7 +6,7 @@
 - Repository: https://github.com/dmitry-solomadin/omarchy-desktop-restore
 - Plugin ID: `io.github.dmitry-solomadin.desktop-restore`
 - Author: `dmitry-solomadin`
-- Version: `0.3.0`
+- Version: `0.3.1`
 - License: MIT
 - Category: System
 
