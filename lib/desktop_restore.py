@@ -500,7 +500,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['save', 'save-shutdown', 'restore', 'status', 'watch'])
     parser.add_argument('--dry-run', action='store_true')
-    parser.add_argument('--json', action='store_true', help='Machine-readable status for the plugin panel')
+    parser.add_argument('--json', action='store_true', help='Machine-readable checkpoint status')
     parser.add_argument('--file', type=Path, help='Use a separate snapshot (for testing or a named layout)')
     parser.add_argument('--if-shutting-down', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()

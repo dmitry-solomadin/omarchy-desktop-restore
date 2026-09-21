@@ -6,7 +6,7 @@
 - Repository: https://github.com/dmitry-solomadin/omarchy-desktop-restore
 - Plugin ID: `io.github.dmitry-solomadin.desktop-restore`
 - Author: `dmitry-solomadin`
-- Version: `0.1.1`
+- Version: `0.1.2`
 - License: MIT
 - Category: System
 
@@ -43,7 +43,7 @@ activation guard expires and restores the prior activation behavior.
 
 The original helper has also been used through real reboot/restore cycles. The
 complete packaged install/uninstall lifecycle on a fresh Omarchy user profile,
-actual bar popup interaction, and comprehensive multi-window browser recovery
+background plugin startup, and comprehensive multi-window browser recovery
 still need broader testing. Those are not established by manifest validation
 or mocked setup tests. Also test removed monitors, duplicate conversation titles,
 OpenCode unavailable, and paths containing spaces. Confirm compatibility with
@@ -58,7 +58,7 @@ the OpenCode 2 API version you intend to support.
    state, personal logs, Python bytecode, or installation backups.
 5. Update the manifest version and changelog; push the reviewed source after checks pass.
 6. Tag the release and publish release notes. Keep the two-step README installation
-   instructions current: installing the bar plugin and installing desktop integration.
+    instructions current: installing the background plugin and installing desktop integration.
 7. Follow the current marketplace submission instructions:
    https://github.com/omacom/omarchy-plugin-marketplace/blob/main/SUBMISSION.md
 

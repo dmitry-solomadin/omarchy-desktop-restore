@@ -74,6 +74,14 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(parsed['another']['label'], 'Keep me')
         self.assertNotIn('system.reboot', parsed)
 
+    def test_shell_entry_point_does_not_install_or_restart_integration(self):
+        self.integration.start()
+        self.assertEqual(self.commands, [])
+        self.integration.install()
+        self.commands.clear()
+        self.integration.start()
+        self.assertEqual(self.commands, [['systemctl', '--user', 'start', setup.UNIT, setup.LIFECYCLE_UNIT]])
+
     def test_custom_power_actions_are_not_overwritten(self):
         self.integration.menu.write_text('{"system.reboot":{"action":"my-own-reboot"}}')
         with self.assertRaisesRegex(RuntimeError, 'already customized'):

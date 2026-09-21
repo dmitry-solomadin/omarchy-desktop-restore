@@ -59,10 +59,10 @@ during updates. It then stops the checkpoint watcher and removes all managed
 integration, including its own service and cleanup script. It exits successfully
 instead of restarting. Saved checkpoints and configuration backups remain.
 
-This works even if the widget is disabled, the shell restarts, or the plugin is
+This works even if the shell plugin is disabled, the shell restarts, or the plugin is
 removed while the shell is not running. If the graphical session is stopped,
 cleanup runs after the post-boot hook starts the services on the next login.
-Disabling the widget alone does not uninstall desktop integration.
+Disabling the shell plugin alone does not uninstall desktop integration.
 
 `desktop-restore uninstall` remains available for immediate cleanup while keeping
 the plugin folder. Existing 0.1.0 installations gain the removal monitor by running

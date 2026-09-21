@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 — 2026-09-21
+
+- Removed the bar widget and popup code entirely. Desktop Restore is now a
+  background-only service plugin, controlled through Super+Shift+R and the CLI.
+- The nonvisual shell entry point starts existing systemd integration without
+  restarting it or reinstalling removed integration.
+
 ## 0.1.1 — 2026-09-21
 
 - Normal `omarchy plugin remove` now automatically removes the desktop integration

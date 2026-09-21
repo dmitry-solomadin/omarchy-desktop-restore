@@ -88,7 +88,7 @@ class CheckpointTests(unittest.TestCase):
                     self.assertEqual(result.stdout, 'power reached\n')
                     self.assertLess(time.monotonic() - start, 1.5)
 
-    def test_panel_status_is_read_only_and_works_without_a_checkpoint(self):
+    def test_json_status_is_read_only_and_works_without_a_checkpoint(self):
         with patch.object(app, 'CONFIG', Path(self.temp.name) / 'config'):
             result = app.status(app.STATE / 'restore.json')
         self.assertEqual(result['windows'], [])

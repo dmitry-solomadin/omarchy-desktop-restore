@@ -229,6 +229,11 @@ UMask=0077
             '#!/bin/sh\n# ' + PLUGIN_ID + '\nexec ' + shlex.quote(str(helper)) + ' "$@"\n', 0o700)
         return entries
 
+    def start(self):
+        # A shell service entry point must not recreate integration after uninstall.
+        if self.receipt.exists():
+            run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
+
     def install(self):
         entries = self.plan()
         if entries is None:
@@ -311,7 +316,7 @@ UMask=0077
 if __name__ == '__main__':
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['install', 'uninstall', 'watch-removal'])
+    parser.add_argument('command', choices=['install', 'uninstall', 'start', 'watch-removal'])
     args = parser.parse_args()
     try:
         getattr(Setup(), args.command.replace('-', '_'))()

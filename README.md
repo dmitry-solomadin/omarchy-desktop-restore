@@ -3,11 +3,11 @@
 Bring your Omarchy desktop back after reboot: workspaces, terminal directories,
 browser windows, applications, and **the exact OpenCode conversations you left open**.
 
-Restore when you want with **Super+Shift+R** or the bar panel. Saving is automatic
+Restore when you want with **Super+Shift+R** or the CLI. Saving is automatic
 and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
 with Omarchy's normal power action even if saving fails or hangs.
 
-Version **0.1.1** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.1.2** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -26,7 +26,7 @@ Version **0.1.1** · Omarchy 4 / Lua-based Hyprland · MIT license
 - Desktop-launcher apps such as Signal also receive a temporary class-matching
   rule, covering launchers or existing background processes that lose the launch
   token. The compositor disables this rule after 20 seconds, even if restore exits.
-- A small bar panel shows the restore checkpoint and restore results.
+- Background-only operation with shortcut and CLI controls; no bar widget or popup.
 - User-level installation, backups, rollback on setup failure, and uninstall.
 - Python standard library only; no pip dependencies.
 
@@ -36,8 +36,8 @@ Developed against **Omarchy 4.0.4 / Hyprland 0.56.2** and its Lua dispatch API.
 Legacy Hyprland `.conf` configurations are not supported.
 
 Required commands: `python3` (3.10+), `hyprctl`, `ghostty`, `uwsm-app`, `gio`,
-`systemctl`, `busctl`, and GNU `timeout`. The bar panel requires Omarchy's
-Quickshell shell. **`opencode2` is optional**, required only for OpenCode recovery;
+`systemctl`, `busctl`, and GNU `timeout`. The plugin's nonvisual service entry point
+uses Omarchy's Quickshell shell. **`opencode2` is optional**, required only for OpenCode recovery;
 the adapter targets its V2 session API. Terminal restoration currently uses
 Ghostty even if the original terminal used another supported emulator.
 
@@ -50,7 +50,7 @@ omarchy plugin add https://github.com/dmitry-solomadin/omarchy-desktop-restore -
 "$HOME/.config/omarchy/plugins/io.github.dmitry-solomadin.desktop-restore/bin/desktop-restore" install
 ```
 
-The first command installs and enables the bar widget. The second installs the
+The first command installs and enables the background plugin. The second installs the
 watcher, startup hook, restore shortcut, CLI launcher, and power-menu integration.
 Existing custom power actions or a conflicting shortcut must be resolved first.
 See [setup details](docs/setup.md).
@@ -63,27 +63,26 @@ setup, since the installed service refers to that location:
 ```sh
 plugin="$HOME/.config/omarchy/plugins/io.github.dmitry-solomadin.desktop-restore"
 mkdir -p "$plugin"
-cp -a manifest.json DesktopRestore.qml LICENSE README.md bin lib docs "$plugin/"
+cp -a manifest.json Service.qml LICENSE README.md bin lib docs "$plugin/"
 omarchy plugin validate "$plugin"
 omarchy-shell shell rescanPlugins
-omarchy plugin enable io.github.dmitry-solomadin.desktop-restore --section right
+omarchy plugin enable io.github.dmitry-solomadin.desktop-restore
 "$plugin/bin/desktop-restore" install
 ```
 
-Enabling the bar widget alone does not install the desktop integration. Disabling
-the widget hides the panel; use `desktop-restore uninstall` to stop the background
-integration. The watcher runs independently of the shell, including shell restarts.
+Enabling the plugin starts an already-configured integration without creating one.
+Use the setup command above for first-time installation, and
+`desktop-restore uninstall` to stop and remove the integration. The watcher runs independently of
+the shell, including shell restarts.
 
 ## Use
 
 1. Work normally. Automatic checkpoints settle about 20–30 seconds after changes.
 2. Reboot or shut down through Omarchy's menu for a final pre-teardown checkpoint.
-3. After logging in, press **Super+Shift+R**, or click the bar icon and choose
-   **Restore missing windows**.
+3. After logging in, press **Super+Shift+R** or run `desktop-restore restore`.
 
-There is no save shortcut or desktop notification. The panel supports **R** to
-restore and **Escape** to close. Already-open matching windows stay where you
-have placed them.
+There is no bar widget, save shortcut or desktop notification. Already-open
+matching windows stay where you have placed them.
 Restoration never returns focus to the starting window when it finishes. You can
 switch to another workspace or a newly restored window while restoration runs.
 
@@ -166,7 +165,7 @@ metadata. Browser tabs remain in the browser's own session storage.
 - Other applications need identifiable XDG desktop launchers. Internal documents
   and views depend on each app's own recovery support.
 - A launch can wait up to 15 seconds for a matching window. Errors appear in CLI
-  status and the panel's restore output.
+  status and restore output.
 
 ## Remove
 
@@ -179,7 +178,7 @@ omarchy plugin remove io.github.dmitry-solomadin.desktop-restore
 Within about six seconds, the removal monitor stops the watcher and removes the
 managed shortcut, menu overrides, services, startup hook, CLI launcher, and its own
 cleanup code. Saved checkpoints and unrelated configuration are retained.
-Disabling the bar widget or restarting the shell does not trigger removal.
+Disabling the shell plugin or restarting the shell does not trigger removal.
 
 You can still run `desktop-restore uninstall` to remove desktop integration while
 keeping the plugin installed. See [setup details](docs/setup.md) for edited managed
@@ -204,7 +203,7 @@ See [release preparation](RELEASING.md) for validation coverage and publishing.
 
 [Report a bug or request a feature](https://github.com/dmitry-solomadin/omarchy-desktop-restore/issues).
 Include your Omarchy and Hyprland versions, the app involved, and whether you
-restored through the shortcut or panel. Review diagnostic output before sharing:
+restored through the shortcut or CLI. Review diagnostic output before sharing:
 checkpoint files can contain private window titles, directories and session IDs.
 
 See [CHANGELOG.md](CHANGELOG.md) for changes. Licensed under [MIT](LICENSE).
