@@ -175,6 +175,24 @@ run `bin/power-action` first. It silently attempts a checkpoint for at most
 700 ms, then runs Omarchy's original power command regardless of save success.
 If the wrapper is missing, the menu falls back directly to the original command.
 
+### Which reboot paths are covered?
+
+| Path | Save before Omarchy closes windows? |
+| --- | --- |
+| Reboot/Shutdown in the Omarchy system menu | Yes, bounded to 700 ms |
+| Super+Escape or the power key, then choosing Reboot/Shutdown | Yes; these open the same system menu |
+| A custom shortcut calling this plugin's `bin/power-action reboot` or `shutdown` | Yes |
+| `omarchy reboot`, `omarchy system reboot`, or their shutdown equivalents | Best-effort service save and rolling checkpoint fallback |
+| Omarchy's reboot-after-updates prompt and other scripts calling its power commands directly | Best-effort service save and rolling checkpoint fallback |
+| Direct `systemctl reboot` / `poweroff` | Best-effort service save and rolling checkpoint fallback |
+| Forced reboot, power loss, or a system crash | Previously saved checkpoint only |
+
+On the inspected Omarchy 4 implementation, the normal power scripts schedule the
+power action for two seconds later and immediately close application windows.
+They do not expose a shared pre-reboot/pre-shutdown hook. The service's final save
+may therefore happen after windows have closed. The plugin does not currently
+guarantee a fresh pre-teardown checkpoint for every reboot path.
+
 Setup refuses to overwrite existing custom reboot/shutdown entries. If you keep
 your own power actions, call the installed `bin/desktop-restore save-shutdown`
 before them to perform the same bounded save. Direct terminal power commands and
