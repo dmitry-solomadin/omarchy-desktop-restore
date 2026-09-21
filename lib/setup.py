@@ -118,7 +118,7 @@ class Setup:
                 return None  # an update at the same path needs no config rewrite
             raise RuntimeError('Uninstall the existing Desktop Restore integration before moving it.')
         if (self.config / 'systemd/user/desktop-restore.service').exists():
-            raise RuntimeError('The original local helper is installed. Follow docs/setup.md to migrate it first.')
+            raise RuntimeError('An existing desktop-restore.service is installed. Remove its integration before installing this plugin.')
         for command in ('python3', 'ghostty', 'hyprctl', 'uwsm-app', 'gio', 'systemctl', 'timeout', 'busctl'):
             if not shutil.which(command):
                 raise RuntimeError('Missing required command: ' + command)

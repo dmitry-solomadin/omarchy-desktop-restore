@@ -11,7 +11,7 @@ Initial public source release.
 - Exact OpenCode 2 session recovery and terminal working-directory recovery.
 - Native browser session restoration and XDG desktop application launchers.
 - Silent, fail-open shutdown saving with a 700 ms deadline.
-- Omarchy bar panel, user-level setup/removal, migration guide and automated checks.
+- Omarchy bar panel, user-level setup/removal, setup guide and automated checks.
 
 ### Fixes included from local testing
 

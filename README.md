@@ -53,8 +53,7 @@ omarchy plugin add https://github.com/dmitry-solomadin/omarchy-desktop-restore -
 The first command installs and enables the bar widget. The second installs the
 watcher, startup hook, restore shortcut, CLI launcher, and power-menu integration.
 Existing custom power actions or a conflicting shortcut must be resolved first.
-See [setup and migration](docs/setup.md), including migration from the original
-local helper.
+See [setup details](docs/setup.md).
 
 ### Install a local checkout
 

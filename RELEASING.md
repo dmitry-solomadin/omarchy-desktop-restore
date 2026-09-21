@@ -51,7 +51,7 @@ the OpenCode 2 API version you intend to support.
 
 ## Publishing
 
-1. Review README limitations and setup/migration instructions.
+1. Review README limitations and setup instructions.
 2. Confirm plugin ID/repository availability in the current marketplace registry.
 3. Add an optional `preview.png` using sample window titles.
 4. Check executable bits on both `bin/` scripts. Do not package private checkpoint

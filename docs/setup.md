@@ -1,4 +1,4 @@
-# Setup, updates, and migration
+# Setup, updates, and removal
 
 ## Managed integration
 
@@ -44,40 +44,6 @@ watcher, hook and restore binding, using `lib/setup.py` as a reference. Call
 power action. That command is silent and bounded; do not call the Python engine
 directly from an unbounded shutdown path. A manual installation is also removed
 manually rather than through the setup receipt.
-
-## Migrate from the original local desktop-restore helper
-
-The package uses the original checkpoint format and state directory. There is
-no need to recreate saved layouts. The installer detects the original service
-and asks for migration rather than running both watchers.
-
-1. Back up the existing bindings, menu, service, CLI launcher, and
-   `~/.local/state/desktop-restore/`.
-2. Stop the original watcher:
-
-   ```sh
-   systemctl --user stop desktop-restore.service
-   ```
-
-3. Remove only the original helper's integration:
-   - `~/.config/systemd/user/desktop-restore.service`
-   - `~/.config/omarchy/hooks/post-boot.d/start-watcher`, after verifying that it
-     starts this service
-   - `~/.local/bin/desktop-restore`, after verifying it points to the original
-     `~/.local/share/desktop-restore/desktop_restore.py`
-   - The original Desktop Restore binding at the end of `bindings.lua`
-   - The two power-menu overrides pointing to the original
-     `~/.local/share/desktop-restore/power-action`
-4. Reload and check the edited configuration:
-
-   ```sh
-   systemctl --user daemon-reload
-   hyprctl reload
-   hyprctl configerrors
-   ```
-
-5. Follow the README installation steps. Keep the original helper source and
-   backups until the packaged version is working. Retain the checkpoint state.
 
 ## Uninstall behavior
 
