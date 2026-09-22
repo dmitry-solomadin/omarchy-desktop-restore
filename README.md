@@ -42,15 +42,7 @@ Existing settings are preserved. Setup conflicts appear in the Omarchy shell log
 If you install a supported agent later, re-enable the plugin or restart the shell
 to pick up its hooks. Agent-specific setup below still applies.
 
-## Agent setup
-
-### OpenCode 1 and 2
-
-Sessions are identified from their window titles. Keep conversation titles unique;
-ambiguous matches are skipped rather than guessed. No additional hooks are needed.
-The running process selects the version; V1 uses `opencode session list`, while
-V2 uses its session API. Shutdown saving uses cached metadata for both.
-V1 windows showing only `OpenCode` (home or an untitled conversation) are skipped.
+## Additional agent setup
 
 ### Claude Code and Codex
 
