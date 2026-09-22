@@ -1,61 +1,80 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
-  <title>Desktop Restore for Omarchy</title>
-  <desc>A dark title card with an orange-accented tiled desktop, a terminal prompt, and a return arrow.</desc>
-  <rect width="1600" height="900" fill="#18191e"/>
+  <title>Desktop Restore — Same agents. Same conversations.</title>
+  <desc>OpenCode, Claude Code and Codex session threads cross a reboot boundary and resume with the same illustrative session identifiers.</desc>
+  <rect width="1600" height="900" fill="#f3f0e8"/>
 
   <g font-family="Liberation Sans, Arial, sans-serif">
-    <text x="128" y="264" font-size="19" letter-spacing="4" fill="#92949f">OMARCHY PLUGIN</text>
-    <text x="120" y="382" font-size="112" font-weight="700" letter-spacing="-4" fill="#eeede9">Desktop</text>
-    <text x="120" y="501" font-size="112" font-weight="700" letter-spacing="-4" fill="#efa36d">Restore</text>
-    <text x="128" y="563" font-size="27" fill="#a7a7b1">Your workspace. Right where you left it.</text>
+    <rect x="92" y="75" width="12" height="12" fill="#177a65"/>
+    <text x="119" y="89" font-size="18" letter-spacing="3" fill="#626a62">PICK UP WHERE YOU LEFT OFF</text>
+    <text x="1508" y="87" text-anchor="end" font-size="27" font-weight="700" fill="#202c25">Desktop Restore</text>
+    <text x="1508" y="116" text-anchor="end" font-size="15" letter-spacing="3" fill="#626a62">FOR OMARCHY</text>
+
+    <text x="86" y="224" font-size="100" font-weight="700" letter-spacing="-4" fill="#202c25">Same agents.</text>
+    <text x="86" y="328" font-size="100" font-weight="700" letter-spacing="-4" fill="#177a65">Same conversations.</text>
+    <text x="93" y="380" font-size="28" fill="#626a62">Resume your exact agent sessions after reboot.</text>
   </g>
 
-  <g fill="none" stroke="#30323c" stroke-width="2">
-    <rect x="901" y="263" width="500" height="350" rx="23"/>
-    <rect x="916" y="278" width="500" height="350" rx="23"/>
-  </g>
-  <rect x="931" y="293" width="500" height="350" rx="23" fill="#202127" stroke="#555761" stroke-width="3"/>
-  <path d="M933 349H1429" stroke="#3b3d46" stroke-width="2"/>
-  <g font-family="Liberation Sans, Arial, sans-serif" font-size="17" text-anchor="middle">
-    <rect x="956" y="309" width="31" height="25" rx="6" fill="#efa36d"/>
-    <text x="971.5" y="327" fill="#202127" font-weight="700">1</text>
-    <text x="1010" y="327" fill="#868994">2</text>
-    <text x="1048" y="327" fill="#868994">3</text>
-  </g>
-  <g fill="#727580">
-    <circle cx="1374" cy="322" r="3"/>
-    <circle cx="1387" cy="322" r="3"/>
-    <circle cx="1400" cy="322" r="3"/>
+  <rect x="790" y="460" width="140" height="292" rx="4" fill="#e4e1d8"/>
+  <path d="M790 460v292M930 460v292" stroke="#b4b6ac" stroke-width="2" stroke-dasharray="4 6"/>
+  <g font-family="Liberation Mono, monospace" font-size="15" letter-spacing="1.5" fill="#697168">
+    <text x="93" y="445">AGENT</text>
+    <text x="395" y="445">SAVED SESSION</text>
+    <text x="860" y="445" text-anchor="middle">REBOOT</text>
+    <text x="1158" y="445">EXACT SESSION RESUMED</text>
   </g>
 
-  <rect x="953" y="371" width="248" height="249" rx="10" fill="#29282a" stroke="#bd8863" stroke-width="2"/>
-  <path d="M975 401l10 9-10 9M994 419h15" fill="none" stroke="#efa36d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-  <g stroke="#646069" stroke-width="4" stroke-linecap="round">
-    <path d="M975 453h99M975 472h167"/>
-    <path d="M975 510h135M975 529h78"/>
+  <g font-family="Liberation Sans, Arial, sans-serif" font-size="29" font-weight="700" fill="#202c25">
+    <text x="122" y="524">OpenCode</text>
+    <text x="122" y="622">Claude Code</text>
+    <text x="122" y="720">Codex</text>
   </g>
-  <path d="M975 567h10" stroke="#efa36d" stroke-width="4" stroke-linecap="round"/>
+  <rect x="94" y="502" width="8" height="23" rx="4" fill="#177a65"/>
+  <rect x="94" y="600" width="8" height="23" rx="4" fill="#b55b36"/>
+  <rect x="94" y="698" width="8" height="23" rx="4" fill="#5268b0"/>
 
-  <rect x="1220" y="371" width="189" height="115" rx="10" fill="#282f30" stroke="#7c9890" stroke-width="2"/>
-  <path d="M1240 394h62M1240 412h148M1240 430h105" fill="none" stroke="#4e6661" stroke-width="4" stroke-linecap="round"/>
-  <rect x="1220" y="505" width="189" height="115" rx="10" fill="#2d2b35" stroke="#8d83a2" stroke-width="2"/>
-  <path d="M1240 529h59M1240 547h109M1240 565h83" fill="none" stroke="#605771" stroke-width="4" stroke-linecap="round"/>
-
-  <circle cx="1381" cy="619" r="77" fill="#18191e"/>
-  <circle cx="1381" cy="619" r="66" fill="#efa36d"/>
-  <g transform="translate(1343 581) scale(3.1667)" fill="none" stroke="#242328" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 10a9 9 0 1 1 2.6 8.5"/>
-    <path d="M3 4v6h6"/>
+  <g fill="#fcfaf5" stroke="#d2d4c9" stroke-width="1.5">
+    <rect x="395" y="483" width="230" height="62" rx="7"/>
+    <rect x="395" y="581" width="230" height="62" rx="7"/>
+    <rect x="395" y="679" width="230" height="62" rx="7"/>
+  </g>
+  <g font-family="Liberation Mono, monospace" font-size="22" fill="#454f46">
+    <text x="419" y="522">session A7F2</text>
+    <text x="419" y="620">session C9B4</text>
+    <text x="419" y="718">session E3D8</text>
   </g>
 
-  <g font-family="Liberation Sans, Arial, sans-serif" font-size="20" fill="#c0bec5" text-anchor="middle">
-    <rect x="128" y="653" width="84" height="42" rx="7" fill="#222329" stroke="#41434d"/>
-    <text x="170" y="680">Super</text>
-    <text x="231" y="680" fill="#727580">+</text>
-    <rect x="250" y="653" width="78" height="42" rx="7" fill="#222329" stroke="#41434d"/>
-    <text x="289" y="680">Shift</text>
-    <text x="347" y="680" fill="#727580">+</text>
-    <rect x="366" y="653" width="45" height="42" rx="7" fill="#222329" stroke="#41434d"/>
-    <text x="388.5" y="680">R</text>
+  <g fill="none" stroke-width="3">
+    <path d="M625 514H790M930 514H1131" stroke="#177a65"/>
+    <path d="M625 612H790M930 612H1131" stroke="#b55b36"/>
+    <path d="M625 710H790M930 710H1131" stroke="#5268b0"/>
+    <g stroke-dasharray="5 8" opacity="0.55">
+      <path d="M790 514H930" stroke="#177a65"/>
+      <path d="M790 612H930" stroke="#b55b36"/>
+      <path d="M790 710H930" stroke="#5268b0"/>
+    </g>
+    <path d="M1121 506l10 8-10 8" stroke="#177a65"/>
+    <path d="M1121 604l10 8-10 8" stroke="#b55b36"/>
+    <path d="M1121 702l10 8-10 8" stroke="#5268b0"/>
+  </g>
+
+  <rect x="1158" y="483" width="350" height="62" rx="7" fill="#dfece1"/>
+  <rect x="1158" y="581" width="350" height="62" rx="7" fill="#efe3d8"/>
+  <rect x="1158" y="679" width="350" height="62" rx="7" fill="#e1e5f0"/>
+  <g font-family="Liberation Mono, monospace" font-size="22">
+    <text x="1182" y="522" fill="#146b58">session A7F2</text>
+    <text x="1182" y="620" fill="#9c4d2e">session C9B4</text>
+    <text x="1182" y="718" fill="#445b9d">session E3D8</text>
+  </g>
+  <g fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1458 513l7 7 13-15" stroke="#177a65"/>
+    <path d="M1458 611l7 7 13-15" stroke="#b55b36"/>
+    <path d="M1458 709l7 7 13-15" stroke="#5268b0"/>
+  </g>
+
+  <path d="M92 790H1508" stroke="#d1d3c8" stroke-width="1.5"/>
+  <g font-family="Liberation Sans, Arial, sans-serif">
+    <text x="93" y="843" font-size="23" fill="#626a62">Your conversations. Your apps. Your workspaces.</text>
+    <rect x="1248" y="810" width="260" height="50" rx="6" fill="#202c25"/>
+    <text x="1378" y="842" text-anchor="middle" font-size="22" fill="#f3f0e8">Super + Shift + R</text>
   </g>
 </svg>
