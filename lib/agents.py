@@ -8,6 +8,7 @@ import sys
 import time
 
 KINDS = {'codex', 'claude', 'herdr'}
+OPENCODE = {'opencode': 'opencode1', 'opencode2': 'opencode'}
 SESSION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{7,127}\Z')
 BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
@@ -26,6 +27,8 @@ def command(proc):
     if not argv:
         return None
     name = Path(argv[0]).name
+    if name in OPENCODE:
+        return OPENCODE[name], argv[1:]
     if name in KINDS:
         return name, argv[1:]
     if name in ('node', 'nodejs', 'bun') and len(argv) > 1:
@@ -34,6 +37,8 @@ def command(proc):
             return 'codex', argv[2:]
         if '/@anthropic-ai/claude-code/' in script and script.endswith('/cli.js'):
             return 'claude', argv[2:]
+        if '/opencode-ai/' in script and script.endswith('/bin/opencode'):
+            return 'opencode1', argv[2:]
     return None
 
 
@@ -54,7 +59,8 @@ def descendants(pid, procs):
 def process_env(pid):
     # Never copy credentials or the agent's full environment into checkpoints.
     wanted = {b'CODEX_HOME', b'CLAUDE_CONFIG_DIR', b'HERDR_CONFIG_PATH', b'XDG_CONFIG_HOME',
-              b'HERDR_SESSION', b'HERDR_SOCKET_PATH'}
+              b'HERDR_SESSION', b'HERDR_SOCKET_PATH', b'XDG_DATA_HOME',
+              b'OPENCODE_CONFIG', b'OPENCODE_CONFIG_DIR'}
     try:
         result = {}
         for entry in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'):
@@ -221,6 +227,23 @@ def terminal_branch(window, procs, siblings):
     raise ValueError('Cannot map agent to a shared-process terminal window; use an independent terminal process')
 
 
+def opencode_mode(args):
+    """Find a subcommand/project after global options without treating values as commands."""
+    valued = {'--session', '-s', '--model', '-m', '--agent', '--prompt', '--port',
+              '--hostname', '--log-level', '--password', '--username'}
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg == '--':
+            return None
+        elif arg in valued:
+            skip = True
+        elif not arg.startswith('-'):
+            return arg
+    return None
+
+
 def terminal_agent(window, procs, state, shared=False, siblings=None):
     candidates = []
     roots = {pid: proc for pid, proc in procs.items()
@@ -232,6 +255,11 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
         if not identified:
             continue
         kind, args = identified
+        if kind in OPENCODE.values() and opencode_mode(args) in (
+                'run', 'serve', 'web', 'acp', 'api', 'session', 'db', 'debug', 'mcp',
+                'auth', 'providers', 'models', 'agent', 'upgrade', 'uninstall',
+                'completion', 'stats', 'export', 'import', 'github', 'pr', 'plugin'):
+            continue
         if kind == 'herdr' and args and args[0] in ('server', 'api', 'status', 'integration'):
             continue
         # Exclude non-interactive CLI jobs, tool subprocesses and background jobs.
@@ -266,6 +294,15 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
     pid, kind, args = candidates[0]
     proc = procs[pid]
     env = process_env(pid)
+    if kind in OPENCODE.values():
+        if opencode_mode(args) == 'attach' or any(
+                arg == '--standalone' or arg.split('=', 1)[0] == '--server' for arg in args):
+            raise ValueError('Attached, remote and standalone OpenCode servers are not supported')
+        env = {k: v for k, v in env.items() if k in (
+            'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'OPENCODE_CONFIG', 'OPENCODE_CONFIG_DIR')}
+        # Session argv can become stale when the user switches conversations.
+        # The caller resolves the current title against this version's metadata.
+        return {'kind': kind, 'cwd': proc['cwd'], 'opencode_args': args, 'agent_env': env}
     if kind == 'herdr':
         session = herdr_session(args, env)
         argv = ['herdr', '--session', session]

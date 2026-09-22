@@ -3,7 +3,7 @@
 Save your Omarchy desktop automatically and restore it after reboot with
 **Super+Shift+R**. Runs silently in the background, with no bar widget or notifications.
 
-Version **0.5.0** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.6.0** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -11,8 +11,8 @@ Version **0.5.0** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 - **Terminals:** Ghostty, Foot/footclient, Kitty, Alacritty and WezTerm. Reopens
   each in its original emulator and working directory.
-- **Agent harnesses:** exact-session resume for OpenCode 2, Claude Code and Codex;
-  default and named herdr sessions. OpenCode 1 is not currently supported.
+- **Agent harnesses:** exact-session resume for OpenCode 1 and 2, Claude Code and
+  Codex; default and named herdr sessions.
 - **Regular application windows:** reopens apps such as Signal and browsers such
   as Chrome, Chromium, Brave, Firefox and Zen, using each app's native recovery.
 - **Desktop layout:** numbered, named and special workspaces, connected monitors,
@@ -26,7 +26,8 @@ Version **0.5.0** · Omarchy 4 / Lua-based Hyprland · MIT license
   **Omarchy 4.0.4 / Hyprland 0.56.2**; legacy `.conf` setups are unsupported.
 - Python 3.10+, `hyprctl`, `uwsm-app`, `gio`, `systemctl`, `busctl` and GNU `timeout`.
   No pip dependencies.
-- The terminals and applications you want to restore. OpenCode recovery requires `opencode2`.
+- The terminals and applications you want to restore. OpenCode recovery requires
+  `opencode` (1.x) or `opencode2` (2.x), matching the saved version.
 
 ## Install
 
@@ -46,10 +47,13 @@ to pick up its hooks. Agent-specific setup below still applies.
 
 ## Agent setup
 
-### OpenCode 2
+### OpenCode 1 and 2
 
 Sessions are identified from their window titles. Keep conversation titles unique;
 ambiguous matches are skipped rather than guessed. No additional hooks are needed.
+The running process selects the version; V1 uses `opencode session list`, while
+V2 uses its session API. Shutdown saving uses cached metadata for both.
+V1 windows showing only `OpenCode` (home or an untitled conversation) are skipped.
 
 ### Claude Code and Codex
 

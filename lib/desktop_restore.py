@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from agents import read_process, terminal_agent
+from agents import read_process, terminal_agent, valid_session, options
 from terminals import TERMINALS, terminal_launch
 
 HOME = Path.home()
@@ -27,8 +27,8 @@ BROWSERS = {
 }
 
 
-def run(args, timeout=10):
-    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout)
+def run(args, timeout=10, **kwargs):
+    result = subprocess.run(args, text=True, capture_output=True, timeout=timeout, **kwargs)
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or str(args))
     return result.stdout.strip()
@@ -157,8 +157,54 @@ def session_for_title(title, available):
     prefix = label[:-1] if truncated else label
     matches = [s for s in available if (s['title'].startswith(prefix) if truncated else s['title'] == label)]
     if len(matches) != 1:
-        raise ValueError(f'OpenCode title matches {len(matches)} sessions; rename it uniquely and save again')
+        raise ValueError(f'OpenCode title matches {len(matches)} sessions; keep conversation titles unique')
     return matches[0]
+
+
+def with_env(argv, env):
+    return ['env', *[f'{key}={value}' for key, value in sorted(env.items())], *argv] if env else argv
+
+
+def sessions_v1(cwd, env):
+    # Query the public CLI, not a version-dependent database schema. Request a
+    # bounded full listing and reject the cap rather than hiding duplicate titles.
+    if not run(with_env(['opencode', '--version'], env), 10, cwd=cwd).startswith('1.'):
+        raise ValueError('OpenCode 1 recovery requires opencode version 1.x')
+    output = run(with_env(['opencode', 'session', 'list', '--format', 'json',
+                           '--max-count', '10000'], env), 20, cwd=cwd)
+    data = json.loads(output) if output else []
+    if not isinstance(data, list) or len(data) >= 10000:
+        raise ValueError('Cannot obtain a complete OpenCode 1 session listing')
+    result = []
+    for session in data:
+        if (not isinstance(session, dict) or not valid_session(session.get('id'), session.get('directory'))
+                or not isinstance(session.get('title'), str)):
+            raise ValueError('Invalid OpenCode 1 session metadata')
+        result.append({'id': session['id'], 'title': session['title'],
+                       'location': {'directory': session['directory']}})
+    return result
+
+
+def opencode_window(title, agent, available):
+    kind, cwd = agent['kind'], agent['cwd']
+    args, env = agent['opencode_args'], agent['agent_env']
+    binary = 'opencode' if kind == 'opencode1' else 'opencode2'
+    if 'OC | ' in title:
+        session = session_for_title(title, available)
+        if not valid_session(session.get('id'), session.get('location', {}).get('directory')):
+            raise ValueError('Invalid OpenCode session metadata')
+        cwd = session['location']['directory']
+        result = {'kind': kind, 'session': session['id'], 'cwd': cwd}
+        argv = [binary, '--session', session['id'], cwd]
+    elif title == 'OpenCode' and kind == 'opencode':
+        result = {'kind': 'opencode-home', 'cwd': cwd}
+        argv = [binary, cwd]
+    else:
+        # V1 also uses "OpenCode" for untitled conversations, not just home.
+        raise ValueError('OpenCode needs a visible, uniquely named conversation for restoration')
+    flags = options(args, {'--model', '-m', '--agent'}, {'--auto'} if kind == 'opencode' else set())
+    argv[1:1] = flags
+    return {**result, 'argv': with_env(argv, env), 'agent_env': env}
 
 
 def desktop_apps():
@@ -202,18 +248,29 @@ def capture(fast=False):
     clients = hypr('clients')
     procs = processes()
     apps = desktop_apps()
-    available, session_error = [], None
-    if any('OC | ' in c['title'] for c in clients):
-        try:
-            if fast:
-                available = read_json(STATE / 'sessions-cache.json', [])
-            else:
-                available = sessions()
-                write_json(STATE / 'sessions-cache.json', [
-                    {key: s[key] for key in ('id', 'title', 'location')} for s in available
-                ])
-        except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
-            session_error = str(error)
+    session_cache = {}
+
+    def available_sessions(agent):
+        if agent['kind'] == 'opencode1':
+            context = json.dumps([agent['cwd'], agent['agent_env']], sort_keys=True)
+            filename = 'sessions-v1-' + hashlib.sha256(context.encode()).hexdigest()[:16] + '.json'
+        else:
+            filename = 'sessions-cache.json'  # Preserve existing V2 shutdown caches.
+        if filename not in session_cache:
+            try:
+                if fast:
+                    data = read_json(STATE / filename, [])
+                else:
+                    data = sessions_v1(agent['cwd'], agent['agent_env']) if agent['kind'] == 'opencode1' else sessions()
+                    data = [{key: s[key] for key in ('id', 'title', 'location')} for s in data]
+                    write_json(STATE / filename, data)
+                session_cache[filename] = data
+            except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, KeyError) as error:
+                session_cache[filename] = str(error)
+        data = session_cache[filename]
+        if isinstance(data, str):
+            raise ValueError(data)
+        return data
     monitors = {m['id']: m['name'] for m in hypr('monitors')}
     windows = []
     for c in sorted(clients, key=lambda c: (c['workspace']['id'], c['at'][0], c['at'][1])):
@@ -231,8 +288,6 @@ def capture(fast=False):
         try:
             if executable in TERMINALS or 'terminal*' in c.get('tags', []):
                 w['kind'] = 'terminal'
-                direct_agents = [p for p in children(c['pid'], procs)
-                                  if Path(p['cmd'][0]).name == 'opencode2']
                 try:
                     agent = terminal_agent(c, procs, STATE / 'agents',
                                            shared=sum(other['pid'] == c['pid'] for other in clients) > 1,
@@ -241,20 +296,15 @@ def capture(fast=False):
                     w['kind'] = 'agent-unresolved'
                     raise
                 if agent:
-                    w.update(agent)
+                    if agent['kind'] in ('opencode1', 'opencode'):
+                        w['kind'] = 'agent-unresolved'
+                        available = available_sessions(agent) if 'OC | ' in c['title'] else []
+                        w.update(opencode_window(c['title'], agent, available))
+                    else:
+                        w.update(agent)
                 elif 'OC | ' in c['title']:
-                    if session_error:
-                        raise ValueError(session_error)
-                    session = session_for_title(c['title'], available)
-                    w.update(kind='opencode', session=session['id'], cwd=session['location']['directory'])
-                    w['argv'] = ['opencode2', '--session', w['session'], w['cwd']]
-                    # Preserve the existing launcher's approval mode only when identifiable.
-                    if len(direct_agents) == 1 and '--auto' in direct_agents[0]['cmd']:
-                        w['argv'].insert(1, '--auto')
-                elif c['title'] == 'OpenCode' and len(direct_agents) == 1:
-                    agent = direct_agents[0]
-                    w.update(kind='opencode-home', cwd=agent['cwd'])
-                    w['argv'] = ['opencode2'] + (['--auto'] if '--auto' in agent['cmd'] else []) + [w['cwd']]
+                    w['kind'] = 'agent-unresolved'
+                    raise ValueError('Cannot identify the visible local OpenCode process and version')
                 else:
                     w['cwd'] = terminal_cwd(c, procs)
                     w['argv'] = []
@@ -314,7 +364,7 @@ def save_shutdown(if_shutting_down=False):
 def identity(w):
     if w['kind'] == 'browser':
         return ('browser', w['class'], w.get('browser_group'))
-    if w['kind'] in ('codex', 'claude', 'herdr'):
+    if w['kind'] in ('codex', 'claude', 'herdr', 'opencode1'):
         session = w.get('session') or ('default' if w['kind'] == 'herdr' else None)
         return (w['kind'], session, tuple(sorted(w.get('agent_env', {}).items())))
     if w['kind'] == 'opencode':
@@ -331,7 +381,7 @@ def existing_window(saved, live, claimed, same_instance=False):
         if exact:
             return exact
     candidates = [w for w in candidates if identity(w) == identity(saved)]
-    if saved['kind'] == 'opencode' and not saved.get('session'):
+    if saved['kind'] in ('opencode', 'opencode1') and not saved.get('session'):
         return None
     return next((w for w in candidates if w['title'] == saved['title']), candidates[0] if candidates else None)
 
