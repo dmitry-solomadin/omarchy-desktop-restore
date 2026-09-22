@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -126,13 +127,89 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(parsed['another']['label'], 'Keep me')
         self.assertNotIn('system.reboot', parsed)
 
-    def test_shell_entry_point_does_not_install_or_restart_integration(self):
-        self.integration.start()
-        self.assertEqual(self.commands, [])
-        self.integration.install()
+    def test_shell_entry_point_installs_once_without_restarting_on_reload(self):
+        self.integration.root.mkdir()
+        self.integration.execute('start')
+        self.assertTrue(self.integration.receipt.exists())
+        before = self.integration.receipt.read_bytes()
         self.commands.clear()
-        self.integration.start()
+        self.integration.execute('start')
         self.assertEqual(self.commands, [['systemctl', '--user', 'start', setup.UNIT, setup.LIFECYCLE_UNIT]])
+        self.assertEqual(self.integration.receipt.read_bytes(), before)
+        self.assertEqual(self.integration.menu.read_text().count(setup.BEGIN), 1)
+
+    def test_shell_start_refreshes_code_updates_once_and_keeps_user_settings(self):
+        self.integration.root.mkdir()
+        self.integration.execute('start')
+        self.integration.bindings.write_text(self.integration.bindings.read_text() + '-- user setting\n')
+        (self.integration.root / 'manifest.json').write_text('{"version":"updated"}')
+        self.commands.clear()
+        self.integration.execute('start')
+        self.assertIn(['systemctl', '--user', 'restart', setup.UNIT, setup.LIFECYCLE_UNIT], self.commands)
+        self.assertIn('-- user setting', self.integration.bindings.read_text())
+        self.commands.clear()
+        self.integration.execute('start')
+        self.assertEqual(self.commands, [['systemctl', '--user', 'start', setup.UNIT, setup.LIFECYCLE_UNIT]])
+
+    def test_shell_start_upgrades_receipts_without_a_revision(self):
+        self.integration.root.mkdir()
+        self.integration.install()
+        receipt = json.loads(self.integration.receipt.read_text())
+        receipt.pop('revision')
+        self.integration.receipt.write_text(json.dumps(receipt))
+        self.integration.execute('start')
+        self.assertEqual(json.loads(self.integration.receipt.read_text())['revision'], self.integration.revision())
+
+    def test_shell_start_picks_up_a_newly_installed_agent(self):
+        self.integration.root.mkdir()
+        with patch.object(setup.shutil, 'which', side_effect=lambda command:
+                          None if command == 'codex' else '/usr/bin/python3'):
+            self.integration.execute('start')
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
+        self.integration.execute('start')
+        self.assertTrue((self.home / '.codex/hooks.json').exists())
+
+    def test_shell_start_does_not_recreate_a_removed_plugin(self):
+        self.integration.execute('start')
+        self.assertFalse(self.integration.receipt.exists())
+        self.assertEqual(self.commands, [])
+
+    def test_auto_setup_conflict_preserves_user_configuration(self):
+        self.integration.root.mkdir()
+        self.integration.menu.write_text('{"system.reboot":{"action":"my-own-reboot"}}')
+        with self.assertRaisesRegex(RuntimeError, 'already customized'):
+            self.integration.execute('start')
+        self.assertFalse(self.integration.receipt.exists())
+        self.assertEqual(self.integration.bindings.read_text(), '-- My keybindings\n')
+
+    def test_concurrent_shell_startups_install_only_once(self):
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        log = self.home / 'commands.log'
+        for command in ('hyprctl', 'systemctl', 'uwsm-app', 'gio', 'timeout', 'busctl'):
+            path = fakebin / command
+            text = f'#!/bin/sh\nprintf "%s\\n" "{command} $*" >> {shlex.quote(str(log))}\n'
+            if command == 'hyprctl':
+                text += 'if [ "$1" = "-j" ]; then /usr/bin/sleep 0.1; printf "[]\\n"; fi\n'
+            path.write_text(text + 'exit 0\n')
+            path.chmod(0o700)
+        env = {**os.environ, 'PATH': str(fakebin) + ':' + os.environ['PATH']}
+        workers = [subprocess.Popen([sys.executable, '-B', str(ROOT / 'lib/setup.py'), 'start'],
+                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                   for _ in range(2)]
+        try:
+            for worker in workers:
+                _, stderr = worker.communicate(timeout=15)
+                self.assertEqual(worker.returncode, 0, stderr)
+        finally:
+            for worker in workers:
+                if worker.poll() is None:
+                    worker.kill()
+                    worker.communicate()
+        commands = log.read_text().splitlines()
+        self.assertEqual(commands.count('hyprctl -j binds'), 1)
+        self.assertFalse(any('restart' in command for command in commands))
+        self.assertEqual(self.integration.menu.read_text().count(setup.BEGIN), 1)
 
     def test_agent_hooks_keep_user_settings_across_update_and_uninstall(self):
         path = self.home / '.claude/settings.json'

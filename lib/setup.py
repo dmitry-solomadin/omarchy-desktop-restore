@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Install/remove the explicit desktop integration; never requires root."""
+"""Manage the plugin's desktop integration; never requires root."""
 import argparse
 from contextlib import contextmanager
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -137,6 +139,34 @@ class Setup:
         self.bindings = self.config / 'hypr/bindings.lua'
         self.menu = self.config / 'omarchy/extensions/omarchy-menu.jsonc'
 
+    @contextmanager
+    def lock(self):
+        # Shell reloads can start another setup process before the first exits.
+        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (self.state / 'setup.lock').open('a') as stream:
+            fcntl.flock(stream, fcntl.LOCK_EX)
+            yield
+
+    def execute(self, command):
+        if command == 'watch-removal':
+            self.watch_removal()
+        else:
+            with self.lock():
+                getattr(self, command)()
+
+    def revision(self):
+        """Refresh after code updates or newly available agent integrations."""
+        digest = hashlib.sha256(Path(__file__).read_bytes())
+        paths = [self.root / 'manifest.json', self.root / 'Service.qml',
+                 *self.root.glob('lib/*.py'), *self.root.glob('bin/*')]
+        for path in sorted(paths):
+            if path.is_file():
+                digest.update(str(path.relative_to(self.root)).encode())
+                digest.update(path.read_bytes())
+        for agent in ('claude', 'codex'):
+            digest.update(f'{agent}:{bool(shutil.which(agent))}'.encode())
+        return digest.hexdigest()
+
     def agent_hook_files(self):
         result = []
         paths = {
@@ -258,6 +288,7 @@ UMask=0077
                     raise RuntimeError(f'Managed agent hook was edited in {path}; preserve it before updating.')
             entry.update(after=text, agent_hooks=hooks)
             changes.append((path, text, entry['mode']))
+        receipt['revision'] = self.revision()
         changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
         with file_transaction(changes):
             run(['systemctl', '--user', 'daemon-reload'])
@@ -273,8 +304,11 @@ UMask=0077
             elif missing_since is None:
                 missing_since = time.monotonic()
             elif time.monotonic() - missing_since >= 5:
-                self.uninstall(from_monitor=True)
-                return
+                with self.lock():
+                    if not root.is_dir():
+                        self.uninstall(from_monitor=True)
+                        return
+                missing_since = None
             time.sleep(1)
 
     def plan(self):
@@ -324,9 +358,19 @@ UMask=0077
         return entries
 
     def start(self):
-        # A shell service entry point must not recreate integration after uninstall.
-        if self.receipt.exists():
-            run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
+        # A component that is unloading after plugin removal must not reinstall.
+        if not self.root.is_dir():
+            return
+        if not self.receipt.exists():
+            self.install()
+            return
+        receipt = json.loads(self.receipt.read_text())
+        if receipt['root'] != str(self.root):
+            raise RuntimeError('Desktop Restore integration belongs to a different plugin location.')
+        if receipt.get('revision') != self.revision():
+            self.install()
+            return
+        run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
 
     def install(self):
         entries = self.plan()
@@ -337,7 +381,8 @@ UMask=0077
             return
         stamp = str(time.time_ns())
         changes = [(Path(item['path']), item['after'], item['mode']) for item in entries]
-        changes.append((self.receipt, json.dumps({'root': str(self.root), 'files': entries}, indent=2) + '\n', 0o600))
+        receipt = {'root': str(self.root), 'revision': self.revision(), 'files': entries}
+        changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
         for item in entries:
             if item['before'] is not None:
                 path = Path(item['path'])
@@ -409,7 +454,7 @@ if __name__ == '__main__':
     parser.add_argument('command', choices=['install', 'uninstall', 'start', 'watch-removal'])
     args = parser.parse_args()
     try:
-        getattr(Setup(), args.command.replace('-', '_'))()
+        Setup().execute(args.command)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

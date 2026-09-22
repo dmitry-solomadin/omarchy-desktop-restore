@@ -1,8 +1,8 @@
 import QtQuick
 import Quickshell.Io
 
-// No UI. Enabling the plugin starts an already-configured integration; setup
-// remains explicit. systemd owns the processes across shell reloads and exit.
+// No UI. Enabling installs or refreshes integration once per code revision.
+// Ordinary shell reloads only start services that are not already running.
 Item {
   id: root
   property var shell: null

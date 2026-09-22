@@ -3,7 +3,7 @@
 Save your Omarchy desktop automatically and restore it after reboot with
 **Super+Shift+R**. Runs silently in the background, with no bar widget or notifications.
 
-Version **0.4.0** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.5.0** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -34,15 +34,15 @@ Run inside your Omarchy session:
 
 ```sh
 omarchy plugin add https://github.com/dmitry-solomadin/omarchy-desktop-restore --enable
-"${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/io.github.dmitry-solomadin.desktop-restore/bin/desktop-restore" install
 ```
 
-Both commands are required: the first adds the plugin; the second installs its
-services, shortcut and power-menu entries. Setup preserves existing settings
-and reports conflicting shortcuts or custom power actions.
+Enabling the plugin automatically installs its services, shortcut, power-menu
+entries and hooks for installed agents. Plugin updates refresh the integration
+on the next load; ordinary shell reloads do not reinstall or restart it.
+Existing settings are preserved. Setup conflicts appear in the Omarchy shell logs.
 
-After updating the plugin or installing another supported agent, run
-`desktop-restore install` again to refresh the integration.
+If you install a supported agent later, re-enable the plugin or restart the shell
+to pick up its hooks. Agent-specific setup below still applies.
 
 ## Agent setup
 
@@ -153,7 +153,6 @@ Within about six seconds, managed services, hooks, shortcuts and menu entries ar
 removed. Checkpoints and unrelated settings are kept. Disabling the plugin or
 restarting the shell does not trigger cleanup.
 
-To remove integration while keeping the plugin files, run `desktop-restore uninstall`.
 Conflicts with edited managed files are reported in
 `journalctl --user -u omarchy-desktop-restore-lifecycle.service`.
 
