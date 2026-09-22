@@ -68,6 +68,51 @@ class SetupTests(unittest.TestCase):
             self.integration.install()
         self.assertTrue(self.integration.receipt.exists())
 
+    def test_watcher_and_lifecycle_use_the_same_xdg_directories(self):
+        self.integration.install()
+        for unit in (setup.UNIT, setup.LIFECYCLE_UNIT):
+            text = (self.home / '.config/systemd/user' / unit).read_text()
+            self.assertIn('XDG_CONFIG_HOME=' + str(self.integration.config), text)
+            self.assertIn('XDG_STATE_HOME=' + str(self.integration.state.parent), text)
+
+    def test_failed_upgrade_rolls_back_new_files_receipt_and_user_edits(self):
+        with patch.object(setup.shutil, 'which', side_effect=lambda command:
+                          None if command == 'codex' else '/usr/bin/python3'):
+            self.integration.install()
+        settings = self.home / '.claude/settings.json'
+        value = json.loads(settings.read_text())
+        value['theme'] = 'changed-since-install'
+        settings.write_text(json.dumps(value))
+        receipt = json.loads(self.integration.receipt.read_text())
+        paths = [Path(item['path']) for item in receipt['files']] + [self.integration.receipt]
+        before = {path: (path.read_bytes(), path.stat().st_mode) for path in paths}
+        original_write = setup.write
+        failed = False
+
+        def fail_receipt(path, *args):
+            nonlocal failed
+            if path == self.integration.receipt and not failed:
+                failed = True
+                raise OSError('simulated write failure')
+            original_write(path, *args)
+
+        with patch.object(setup, 'write', side_effect=fail_receipt):
+            with self.assertRaisesRegex(OSError, 'simulated'):
+                self.integration.install()
+        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_mode) for path in paths})
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
+
+    def test_uninstall_refuses_a_managed_path_replaced_by_a_symlink(self):
+        self.integration.install()
+        path = self.home / '.local/bin/desktop-restore'
+        original = path.with_name('user-launcher')
+        path.rename(original)
+        path.symlink_to(original)
+        with self.assertRaisesRegex(RuntimeError, 'symlink'):
+            self.integration.uninstall()
+        self.assertTrue(path.is_symlink())
+        self.assertTrue(self.integration.receipt.exists())
+
     def test_uninstall_preserves_unrelated_later_config_changes(self):
         self.integration.install()
         with self.integration.bindings.open('a') as stream:

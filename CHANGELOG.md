@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.2 — 2026-09-21
+
+- Track successful launches before placement so a placement error does not cause
+  duplicate windows on retry. Respect workspace/monitor changes observed during
+  startup and keep pre-existing windows out of browser-launch matching.
+- Match recorded browser profiles separately and retain supported profile flags
+  in both `--key=value` and `--key value` forms.
+- Give the checkpoint watcher explicit XDG config/state paths and refresh its
+  unit on upgrade. Install and upgrade share rollback of actual prior file contents
+  and permissions when writes or validation fail. Refuse symlink replacements
+  during uninstall rather than treating them as managed files.
+- Simplify hook identity validation, process-environment parsing and window waiting.
+  Text and JSON status share one read-only path; text status no longer initializes
+  or rotates checkpoints.
+- Add failure-injection, browser-profile, movement and upgrade regression coverage.
+
 ## 0.3.1 — 2026-09-21
 
 - Cross-checked herdr restoration with wbarakat/omarchy-session-restore and

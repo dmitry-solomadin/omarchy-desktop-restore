@@ -186,6 +186,19 @@ def desktop_apps():
     return apps
 
 
+def browser_flags(argv):
+    """Preserve supported profile flags in both --key=value and --key value forms."""
+    result = []
+    args = iter(argv)
+    for arg in args:
+        key, separator, value = arg.partition('=')
+        if key in ('--profile-directory', '--user-data-dir'):
+            value = value if separator else next(args, '')
+            if value:
+                result.append(key + '=' + value)
+    return result
+
+
 def capture(fast=False):
     clients = hypr('clients')
     procs = processes()
@@ -253,7 +266,7 @@ def capture(fast=False):
                 binary = BROWSERS[c['class'].lower()]
                 if not shutil.which(binary):
                     raise ValueError(f'Browser executable not found: {binary}')
-                flags = [a for a in command[1:] if a.startswith(('--profile-directory=', '--user-data-dir='))]
+                flags = browser_flags(command[1:])
                 w['launch'] = [binary] + flags
                 w['launch'] += ['--restore-last-session']
                 w['browser_group'] = json.dumps([c['class'], flags])
@@ -300,6 +313,8 @@ def save_shutdown(target=None, if_shutting_down=False):
 
 
 def identity(w):
+    if w['kind'] == 'browser':
+        return ('browser', w['class'], w.get('browser_group'))
     if w['kind'] in ('codex', 'claude', 'herdr'):
         session = w.get('session') or ('default' if w['kind'] == 'herdr' else None)
         return (w['kind'], session, tuple(sorted(w.get('agent_env', {}).items())))
@@ -386,9 +401,29 @@ def place(saved, actual):
         dispatch('window.fullscreen_state', window=selector, internal=saved['fullscreen'], client=-1, action='set')
 
 
+def wait_for_window(saved, before, claimed, browser_launched):
+    deadline = time.monotonic() + 15
+    first_seen, locations = None, {}
+    while time.monotonic() < deadline:
+        candidates = [c for c in hypr('clients') if c['class'] == saved['class']
+                      and c['address'] not in claimed
+                      and c['address'] not in before]
+        for candidate in candidates:
+            locations.setdefault(candidate['address'], (candidate.get('workspace'), candidate.get('monitor')))
+        if candidates:
+            first_seen = first_seen if first_seen is not None else time.monotonic()
+            exact = next((c for c in candidates if c['title'] == saved['title']), None)
+            if exact or time.monotonic() - first_seen > (3 if browser_launched else 0.5):
+                actual = exact or candidates[0]
+                moved = locations[actual['address']] != (actual.get('workspace'), actual.get('monitor'))
+                return actual, moved
+        time.sleep(0.2)
+    raise RuntimeError('No matching window appeared within 15 seconds')
+
+
 def restore(snapshot, dry_run=False):
     live = capture()['windows']
-    claimed, launched_browsers, errors = set(), set(), []
+    claimed, launched_browsers, errors = set(), {}, []
     same = snapshot['instance'] == instance()
     restored = already = 0
     mapping_path = STATE / 'restored-windows.json'
@@ -420,33 +455,23 @@ def restore(snapshot, dry_run=False):
                 before = {w['address'] for w in hypr('clients')}
                 group = saved.get('browser_group')
                 if not group or group not in launched_browsers:
-                    if group and any(w['class'] == saved['class'] for w in live):
+                    if group and any(w.get('browser_group') == group for w in live):
                         raise RuntimeError('Browser is already open; restore its missing windows from History')
                     launch(saved)
                     if group:
-                        launched_browsers.add(group)
-                deadline = time.monotonic() + 15
-                first_seen = None
-                while time.monotonic() < deadline:
-                    candidates = [c for c in hypr('clients') if c['class'] == saved['class']
-                                  and c['address'] not in claimed and
-                                  (c['address'] not in before or group in launched_browsers)]
-                    if candidates:
-                        first_seen = first_seen or time.monotonic()
-                        exact = next((c for c in candidates if c['title'] == saved['title']), None)
-                        if exact or time.monotonic() - first_seen > (3 if group else 0.5):
-                            actual = exact or candidates[0]
-                            break
-                    time.sleep(0.2)
-                else:
-                    raise RuntimeError('No matching window appeared within 15 seconds')
+                        launched_browsers[group] = before
+                before = launched_browsers.get(group, before)
+                actual, moved = wait_for_window(saved, before, claimed, group in launched_browsers)
                 claimed.add(actual['address'])
-                place(saved, actual)
+                # Remember the launch before optional placement. A compositor
+                # error must not make the next restore launch the window again.
                 mapping['windows'][saved['key']] = {k: actual[k] for k in ('address', 'pid')}
                 write_json(mapping_path, mapping)
                 restored += 1
                 # Keep metadata for matching the rest of this restore without another API call.
                 live.append({**saved, 'address': actual['address'], 'pid': actual['pid']})
+                if not moved:
+                    place(saved, actual)
                 print('RESTORED ' + label, flush=True)
             except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
                 errors.append(label + ': ' + str(error))
@@ -513,8 +538,20 @@ def main():
     parser.add_argument('--if-shutting-down', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     os.umask(0o077)
-    if args.command == 'status' and args.json:
-        print(json.dumps(status(args.file or STATE / 'restore.json')))
+    target = args.file or STATE / 'restore.json'
+    if args.command == 'status':
+        data = status(target)
+        if args.json:
+            print(json.dumps(data))
+            return 0
+        for label, key in (('Restore checkpoint', 'saved'), ('Latest automatic checkpoint', 'latest_saved')):
+            value = data[key]
+            print(label + ':', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(value)) if value else 'none')
+        for w in data['windows']:
+            print(f"  {w['workspace']:>8}  {w['kind']:10}  {w['title']}" +
+                  (f"\n             WARNING: {w['error']}" if 'error' in w else ''))
+        if data['last_result']:
+            print('Last restore:', json.dumps(data['last_result'], indent=2))
         return 0
     if args.command == 'save-shutdown':
         # Failure is deliberately silent and successful from the shutdown caller's view.
@@ -524,7 +561,6 @@ def main():
             pass
         return 0
     initialize()
-    target = args.file or STATE / 'restore.json'
     if args.command == 'save':
         with lock('restore'):
             snapshot = capture()
@@ -539,20 +575,8 @@ def main():
         snapshot = read_json(target)
         if not snapshot:
             raise RuntimeError('No desktop checkpoint yet. Run desktop-restore save.')
-        if args.command == 'restore':
-            with lock('restore', blocking=False):
-                return 0 if restore(snapshot, args.dry_run) else 1
-        else:
-            print('Restore checkpoint:', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(snapshot['saved'])))
-            for w in snapshot['windows']:
-                print(f"  {w['workspace']:>8}  {w['kind']:10}  {w['title']}" +
-                      (f"\n             WARNING: {w['error']}" if 'error' in w else ''))
-            latest = read_json(STATE / 'latest.json', {})
-            if latest:
-                print('Latest automatic checkpoint:', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(latest['saved'])))
-            result = read_json(STATE / 'last-result.json')
-            if result:
-                print('Last restore:', json.dumps(result, indent=2))
+        with lock('restore', blocking=False):
+            return 0 if restore(snapshot, args.dry_run) else 1
     return 0
 
 

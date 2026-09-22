@@ -56,10 +56,38 @@ def process_env(pid):
     wanted = {b'CODEX_HOME', b'CLAUDE_CONFIG_DIR', b'HERDR_CONFIG_PATH', b'XDG_CONFIG_HOME',
               b'HERDR_SESSION', b'HERDR_SOCKET_PATH'}
     try:
-        return {key.decode(): value.decode() for entry in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
-                if b'=' in entry for key, value in [entry.split(b'=', 1)] if key in wanted}
+        result = {}
+        for entry in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'):
+            key, separator, value = entry.partition(b'=')
+            if separator and key in wanted:
+                result[key.decode()] = value.decode()
+        return result
     except (OSError, UnicodeError):
         return {}
+
+
+def valid_session(session, cwd):
+    return (isinstance(session, str) and SESSION_ID.fullmatch(session) is not None
+            and isinstance(cwd, str) and Path(cwd).is_absolute())
+
+
+def recorded_session(kind, owners, procs, state):
+    """Resolve one identity from live-process hook records, never stale argv."""
+    identities = set()
+    for pid in owners:
+        try:
+            data = json.loads((state / f'{kind}-{pid}.json').read_text())
+        except (OSError, ValueError):
+            raise ValueError(f'No current {kind} session hook record; restart the agent or submit a prompt after enabling its hooks') from None
+        if (not isinstance(data, dict) or data.get('kind') != kind or data.get('pid') != pid
+                or data.get('boot') != BOOT_ID or data.get('start') != procs[pid].get('start')):
+            raise ValueError(f'Stale {kind} session hook record; waiting for a fresh event')
+        if not valid_session(data.get('session'), data.get('cwd')):
+            raise ValueError(f'Invalid {kind} session hook record')
+        identities.add((data['session'], data['cwd']))
+    if len(identities) != 1:
+        raise ValueError(f'Multiple {kind} session hook records for this terminal')
+    return identities.pop()
 
 
 def record(kind, state, payload):
@@ -70,7 +98,7 @@ def record(kind, state, payload):
         return
     session = payload.get('session_id', '')
     cwd = payload.get('cwd', '')
-    if not isinstance(session, str) or not SESSION_ID.fullmatch(session) or not isinstance(cwd, str) or not Path(cwd).is_absolute():
+    if not valid_session(session, cwd):
         return
     pid = os.getppid()
     for _ in range(64):
@@ -219,6 +247,12 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
         candidates.append((pid, kind, args))
     if not candidates:
         return None
+    if shared or len(roots) > 1:
+        root = terminal_branch(window, procs, siblings or [window])
+        branch = descendants(root, procs) | {root}
+        candidates = [c for c in candidates if c[0] in branch]
+        if not candidates:
+            return None  # This is a plain shell; another window owns the agent.
     # A herdr client owns its inner agents; never turn a pane into a separate window.
     herdr = [c for c in candidates if c[1] == 'herdr']
     if len(herdr) == 1:
@@ -227,12 +261,6 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
     # The npm Codex shim and its native child represent one interactive CLI.
     candidates = [c for c in candidates if not (Path(procs[c[0]]['cmd'][0]).name in ('node', 'nodejs', 'bun')
                   and any(other[1] == c[1] and other[0] in descendants(c[0], procs) for other in candidates if other != c))]
-    if shared or len(roots) > 1:
-        root = terminal_branch(window, procs, siblings or [window])
-        branch = descendants(root, procs) | {root}
-        candidates = [c for c in candidates if c[0] in branch]
-        if not candidates:
-            return None  # This is a plain shell; another window owns the agent.
     if len(candidates) != 1:
         raise ValueError('Multiple interactive agents in this terminal; cannot identify the visible session')
     pid, kind, args = candidates[0]
@@ -250,29 +278,11 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
         owners = [pid]
         if kind == 'codex':
             servers = [child for child in descendants(pid, procs)
-                       if command(procs[child]) and command(procs[child])[0] == 'codex'
-                       and codex_mode(command(procs[child])[1]) == 'app-server']
+                       if (identified := command(procs[child])) and identified[0] == 'codex'
+                       and codex_mode(identified[1]) == 'app-server']
             if servers:
                 owners = servers
-        records = []
-        for owner in owners:
-            try:
-                data = json.loads((state / f'{kind}-{owner}.json').read_text())
-            except (OSError, ValueError):
-                raise ValueError(f'No current {kind} session hook record; restart the agent or submit a prompt after enabling its hooks') from None
-            if (not isinstance(data, dict) or data.get('kind') != kind or data.get('pid') != owner or data.get('boot') != BOOT_ID
-                    or data.get('start') != procs[owner].get('start')):
-                raise ValueError(f'Stale {kind} session hook record; waiting for a fresh event')
-            records.append(data)
-        if any(not isinstance(data.get('session'), str) or not SESSION_ID.fullmatch(data['session'])
-               or not isinstance(data.get('cwd'), str) or not Path(data['cwd']).is_absolute() for data in records):
-            raise ValueError(f'Invalid {kind} session hook record')
-        if len({(data['session'], data['cwd']) for data in records}) != 1:
-            raise ValueError(f'Multiple {kind} session hook records for this terminal')
-        data = records[0]
-        session, cwd = data.get('session', ''), data.get('cwd', '')
-        if not isinstance(session, str) or not SESSION_ID.fullmatch(session) or not isinstance(cwd, str) or not Path(cwd).is_absolute():
-            raise ValueError(f'Invalid {kind} session hook record')
+        session, cwd = recorded_session(kind, owners, procs, state)
         if kind == 'codex':
             argv = ['codex', 'resume', session] + options(args,
                 {'--profile', '-p', '--model', '-m', '--sandbox', '-s', '--ask-for-approval', '-a'},

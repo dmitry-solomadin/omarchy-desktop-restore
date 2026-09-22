@@ -7,7 +7,7 @@ Restore when you want with **Super+Shift+R** or the CLI. Saving is automatic
 and silent. The reboot/shutdown menu gives the saver **700 ms**, then continues
 with Omarchy's normal power action even if saving fails or hangs.
 
-Version **0.3.1** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.3.2** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -269,12 +269,16 @@ metadata. Browser tabs remain in the browser's own session storage.
 - Browser placement uses active-tab titles, then window order, so it can be
   approximate. Multiple windows recovered by one browser launch initially share
   that launch's saved workspace; any other saved destinations are corrected
-  without following the windows. If a browser is already running, missing windows are reported for
+  without following the windows. Matching distinguishes recorded browser profile
+  flags; profiles sharing one browser process may still be indistinguishable.
+  If the recorded browser profile is already running, missing windows are reported for
   recovery through History rather than launching another whole-browser restore.
 - Other applications need identifiable XDG desktop launchers. Internal documents
   and views depend on each app's own recovery support.
 - A launch can wait up to 15 seconds for a matching window. Errors appear in CLI
-  status and restore output.
+  status and restore output. Successfully opened windows remain tracked even if
+  placement fails. Workspace/monitor moves observed while waiting for startup
+  are respected instead of being reverted by placement.
 
 ## Power-menu integration
 

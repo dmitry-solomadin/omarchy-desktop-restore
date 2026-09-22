@@ -97,6 +97,14 @@ class CheckpointTests(unittest.TestCase):
         self.assertIsNone(result['saved'])
         self.assertFalse(app.STATE.exists())
 
+    def test_text_status_does_not_initialize_or_rotate_checkpoints(self):
+        with patch.object(sys, 'argv', ['desktop-restore', 'status']), \
+             patch.object(app.os, 'umask'), \
+             patch.object(app, 'initialize', side_effect=AssertionError('status must be read-only')), \
+             patch('builtins.print'):
+            self.assertEqual(app.main(), 0)
+        self.assertFalse(app.STATE.exists())
+
     def test_new_login_keeps_previous_snapshot_despite_new_autosaves(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'STATE', Path(directory)):
             with patch.dict(os.environ, HYPRLAND_INSTANCE_SIGNATURE='old-login'):
@@ -139,6 +147,18 @@ class CheckpointTests(unittest.TestCase):
         saved = {'kind': 'opencode', 'session': 'one', 'title': 'OC | one', 'address': 'old', 'pid': 1}
         other = {**saved, 'session': 'two', 'address': 'new', 'pid': 2}
         self.assertIsNone(app.existing_window(saved, [other], set()))
+
+    def test_browser_profiles_do_not_match_each_other(self):
+        saved = {'kind': 'browser', 'class': 'chromium', 'browser_group': 'profile-one',
+                 'title': 'same site', 'address': 'old', 'pid': 1}
+        other = {**saved, 'browser_group': 'profile-two', 'address': 'new', 'pid': 2}
+        self.assertIsNone(app.existing_window(saved, [other], set()))
+
+    def test_browser_profile_argument_forms_preserve_paths_and_identity(self):
+        flags = ['--user-data-dir=/work/browser data', '--profile-directory=Profile 2']
+        self.assertEqual(app.browser_flags(flags), flags)
+        self.assertEqual(app.browser_flags(['--user-data-dir', '/work/browser data',
+                                            '--profile-directory', 'Profile 2', '--other-flag']), flags)
 
     def test_paginated_api_uses_next_cursor(self):
         pages = ['{"data":[{"id":"one"}],"cursor":{"next":"abc","previous":null}}',

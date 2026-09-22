@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Install/remove the explicit desktop integration; never requires root."""
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -94,12 +95,36 @@ def systemd_arg(value):
 
 
 def write(path, text, mode=0o600):
+    if text is None:
+        path.unlink(missing_ok=True)
+        return
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name(path.name + f'.tmp.{os.getpid()}')
     with temporary.open('w') as stream:
         os.chmod(temporary, mode)
         stream.write(text)
     temporary.replace(path)
+
+
+@contextmanager
+def file_transaction(changes):
+    """Restore actual pre-operation contents and permissions on a failed update."""
+    originals = []
+    for path, _, _ in changes:
+        if path.is_symlink():
+            raise RuntimeError(f'Configuration path is a symlink: {path}')
+        originals.append((path, path.read_text() if path.exists() else None,
+                          path.stat().st_mode & 0o777 if path.exists() else 0o600))
+    applied = []
+    try:
+        for change, original in zip(changes, originals):
+            applied.append(original)
+            write(*change)
+        yield
+    except Exception:
+        for original in reversed(applied):
+            write(*original)
+        raise
 
 
 class Setup:
@@ -184,11 +209,33 @@ UMask=0077
                 (self.config / 'systemd/user' / LIFECYCLE_UNIT, unit, 0o600),
                 (self.config / 'omarchy/hooks/post-boot.d/desktop-restore', hook, 0o700)]
 
+    def watcher_file(self):
+        engine = self.root / 'lib/desktop_restore.py'
+        python = shutil.which('python3')
+        unit = f'''# Managed by {PLUGIN_ID}
+[Unit]
+Description=Desktop Restore automatic checkpoints
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={systemd_arg(python)} {systemd_arg(engine)} watch
+ExecStop=-/usr/bin/timeout --signal=KILL 0.7s {systemd_arg(python)} {systemd_arg(engine)} save-shutdown --if-shutting-down
+Environment={json.dumps(('XDG_CONFIG_HOME=' + str(self.config)).replace('%', '%%'), ensure_ascii=False)}
+Environment={json.dumps(('XDG_STATE_HOME=' + str(self.state.parent)).replace('%', '%%'), ensure_ascii=False)}
+TimeoutStopSec=1s
+Restart=on-failure
+RestartSec=5
+UMask=0077
+'''
+        return self.config / 'systemd/user' / UNIT, unit, 0o600
+
     def refresh_lifecycle(self):
         """Upgrade existing receipts without removing/recreating user integration."""
         receipt = json.loads(self.receipt.read_text())
         changes = []
-        for path, text, mode in self.lifecycle_files():
+        for path, text, mode in [self.watcher_file(), *self.lifecycle_files()]:
             entry = next((item for item in receipt['files'] if item['path'] == str(path)), None)
             if path.is_symlink() or (path.exists() and (entry is None or path.read_text() != entry['after'])):
                 raise RuntimeError(f'Managed content was edited in {path}; preserve it before updating.')
@@ -211,10 +258,9 @@ UMask=0077
                     raise RuntimeError(f'Managed agent hook was edited in {path}; preserve it before updating.')
             entry.update(after=text, agent_hooks=hooks)
             changes.append((path, text, entry['mode']))
-        for path, text, mode in changes:
-            write(path, text, mode)
-        write(self.receipt, json.dumps(receipt, indent=2) + '\n')
-        run(['systemctl', '--user', 'daemon-reload'])
+        changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
+        with file_transaction(changes):
+            run(['systemctl', '--user', 'daemon-reload'])
 
     def watch_removal(self):
         """Ignore shell unloads; clean up only after the source folder disappears."""
@@ -246,23 +292,6 @@ UMask=0077
         if any(b.get('modmask') == 65 and b.get('key', '').upper() == 'R' for b in binds):
             raise RuntimeError('Super+Shift+R is already bound. Resolve that binding before installation.')
         helper = self.root / 'bin/desktop-restore'
-        python = shutil.which('python3')
-        engine = self.root / 'lib/desktop_restore.py'
-        unit = f'''# Managed by {PLUGIN_ID}
-[Unit]
-Description=Desktop Restore automatic checkpoints
-PartOf=graphical-session.target
-After=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart={systemd_arg(python)} {systemd_arg(engine)} watch
-ExecStop=-/usr/bin/timeout --signal=KILL 0.7s {systemd_arg(python)} {systemd_arg(engine)} save-shutdown --if-shutting-down
-TimeoutStopSec=1s
-Restart=on-failure
-RestartSec=5
-UMask=0077
-'''
         entries = []
 
         def add(path, after, mode=0o600, block=None, hooks=None):
@@ -286,8 +315,7 @@ UMask=0077
         add(self.bindings, bindings + block, block=block)
         menu, block = menu_block(self.menu.read_text() if self.menu.exists() else '{}\n', self.root / 'bin/power-action')
         add(self.menu, menu, block=block)
-        add(self.config / 'systemd/user' / UNIT, unit)
-        for path, text, mode in self.lifecycle_files():
+        for path, text, mode in [self.watcher_file(), *self.lifecycle_files()]:
             add(path, text, mode)
         add(self.home / '.local/bin/desktop-restore',
             '#!/bin/sh\n# ' + PLUGIN_ID + '\nexec ' + shlex.quote(str(helper)) + ' "$@"\n', 0o700)
@@ -308,30 +336,22 @@ UMask=0077
             print('Desktop Restore integration already installed; watcher restarted.')
             return
         stamp = str(time.time_ns())
-        applied = []
-        try:
-            for item in entries:
+        changes = [(Path(item['path']), item['after'], item['mode']) for item in entries]
+        changes.append((self.receipt, json.dumps({'root': str(self.root), 'files': entries}, indent=2) + '\n', 0o600))
+        for item in entries:
+            if item['before'] is not None:
                 path = Path(item['path'])
-                if item['before'] is not None:
-                    shutil.copy2(path, path.with_name(path.name + '.bak.desktop-restore-' + stamp))
-                write(path, item['after'], item['mode'])
-                applied.append(item)
-            run(['hyprctl', 'reload'])
-            errors = run(['hyprctl', 'configerrors'])
-            if errors:
-                raise RuntimeError(errors)
-            run(['systemctl', '--user', 'daemon-reload'])
-            write(self.receipt, json.dumps({'root': str(self.root), 'files': entries}, indent=2) + '\n')
-            run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
+                shutil.copy2(path, path.with_name(path.name + '.bak.desktop-restore-' + stamp))
+        try:
+            with file_transaction(changes):
+                run(['hyprctl', 'reload'])
+                errors = run(['hyprctl', 'configerrors'])
+                if errors:
+                    raise RuntimeError(errors)
+                run(['systemctl', '--user', 'daemon-reload'])
+                run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
         except Exception:
             subprocess.run(['systemctl', '--user', 'stop', UNIT, LIFECYCLE_UNIT], capture_output=True, timeout=5)
-            self.receipt.unlink(missing_ok=True)
-            for item in reversed(applied):
-                path = Path(item['path'])
-                if item['before'] is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    write(path, item['before'], item['mode'])
             subprocess.run(['hyprctl', 'reload'], capture_output=True, timeout=5)
             subprocess.run(['systemctl', '--user', 'daemon-reload'], capture_output=True, timeout=5)
             raise
@@ -345,6 +365,8 @@ UMask=0077
         changes = []
         for item in receipt['files']:
             path = Path(item['path'])
+            if path.is_symlink():
+                raise RuntimeError(f'Configuration path is a symlink: {path}')
             if not path.exists():
                 continue
             current = path.read_text()
@@ -371,10 +393,7 @@ UMask=0077
         if not from_monitor and (self.config / 'systemd/user' / LIFECYCLE_UNIT).exists():
             run(['systemctl', '--user', 'stop', LIFECYCLE_UNIT])
         for path, text, mode in changes:
-            if text is None:
-                path.unlink(missing_ok=True)
-            else:
-                write(path, text, mode)
+            write(path, text, mode)
         run(['systemctl', '--user', 'daemon-reload'])
         run(['hyprctl', 'reload'])
         errors = run(['hyprctl', 'configerrors'])
