@@ -143,24 +143,6 @@ restarting the shell does not trigger cleanup.
 Conflicts with edited managed files are reported in
 `journalctl --user -u omarchy-desktop-restore-lifecycle.service`.
 
-## Development
-
-```sh
-python3 -m unittest discover -s tests -v
-omarchy plugin validate .
-sh -n bin/desktop-restore
-sh -n bin/power-action
-```
-
-The tests isolate state and replace power commands with harmless substitutes.
-Live checks cover Ghostty, Foot (including server mode) and herdr. Kitty, Alacritty
-and WezTerm have regression coverage but have not been tested live on the development machine.
-
-## Feedback
-
-[Report a bug or request a feature](https://github.com/dmitry-solomadin/omarchy-desktop-restore/issues).
-Include your Omarchy and Hyprland versions, the app involved, and what failed
-when restoring. Review diagnostic output before sharing:
-checkpoint files can contain private window titles, directories and session IDs.
+## License
 
 Licensed under [MIT](LICENSE).
