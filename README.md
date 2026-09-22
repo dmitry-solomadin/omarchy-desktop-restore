@@ -7,6 +7,8 @@ Version **0.6.2** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
+![Desktop Restore — your workspace, right where you left it](preview.png)
+
 ## Features
 
 - **Terminals:** Ghostty, Foot/footclient, Kitty, Alacritty and WezTerm. Reopens

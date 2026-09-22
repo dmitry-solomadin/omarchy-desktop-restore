@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <title>Desktop Restore for Omarchy</title>
+  <desc>A dark title card with an orange-accented tiled desktop, a terminal prompt, and a return arrow.</desc>
+  <rect width="1600" height="900" fill="#18191e"/>
+
+  <g font-family="Liberation Sans, Arial, sans-serif">
+    <text x="128" y="264" font-size="19" letter-spacing="4" fill="#92949f">OMARCHY PLUGIN</text>
+    <text x="120" y="382" font-size="112" font-weight="700" letter-spacing="-4" fill="#eeede9">Desktop</text>
+    <text x="120" y="501" font-size="112" font-weight="700" letter-spacing="-4" fill="#efa36d">Restore</text>
+    <text x="128" y="563" font-size="27" fill="#a7a7b1">Your workspace. Right where you left it.</text>
+  </g>
+
+  <g fill="none" stroke="#30323c" stroke-width="2">
+    <rect x="901" y="263" width="500" height="350" rx="23"/>
+    <rect x="916" y="278" width="500" height="350" rx="23"/>
+  </g>
+  <rect x="931" y="293" width="500" height="350" rx="23" fill="#202127" stroke="#555761" stroke-width="3"/>
+  <path d="M933 349H1429" stroke="#3b3d46" stroke-width="2"/>
+  <g font-family="Liberation Sans, Arial, sans-serif" font-size="17" text-anchor="middle">
+    <rect x="956" y="309" width="31" height="25" rx="6" fill="#efa36d"/>
+    <text x="971.5" y="327" fill="#202127" font-weight="700">1</text>
+    <text x="1010" y="327" fill="#868994">2</text>
+    <text x="1048" y="327" fill="#868994">3</text>
+  </g>
+  <g fill="#727580">
+    <circle cx="1374" cy="322" r="3"/>
+    <circle cx="1387" cy="322" r="3"/>
+    <circle cx="1400" cy="322" r="3"/>
+  </g>
+
+  <rect x="953" y="371" width="248" height="249" rx="10" fill="#29282a" stroke="#bd8863" stroke-width="2"/>
+  <path d="M975 401l10 9-10 9M994 419h15" fill="none" stroke="#efa36d" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#646069" stroke-width="4" stroke-linecap="round">
+    <path d="M975 453h99M975 472h167"/>
+    <path d="M975 510h135M975 529h78"/>
+  </g>
+  <path d="M975 567h10" stroke="#efa36d" stroke-width="4" stroke-linecap="round"/>
+
+  <rect x="1220" y="371" width="189" height="115" rx="10" fill="#282f30" stroke="#7c9890" stroke-width="2"/>
+  <path d="M1240 394h62M1240 412h148M1240 430h105" fill="none" stroke="#4e6661" stroke-width="4" stroke-linecap="round"/>
+  <rect x="1220" y="505" width="189" height="115" rx="10" fill="#2d2b35" stroke="#8d83a2" stroke-width="2"/>
+  <path d="M1240 529h59M1240 547h109M1240 565h83" fill="none" stroke="#605771" stroke-width="4" stroke-linecap="round"/>
+
+  <circle cx="1381" cy="619" r="77" fill="#18191e"/>
+  <circle cx="1381" cy="619" r="66" fill="#efa36d"/>
+  <g transform="translate(1343 581) scale(3.1667)" fill="none" stroke="#242328" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 10a9 9 0 1 1 2.6 8.5"/>
+    <path d="M3 4v6h6"/>
+  </g>
+
+  <g font-family="Liberation Sans, Arial, sans-serif" font-size="20" fill="#c0bec5" text-anchor="middle">
+    <rect x="128" y="653" width="84" height="42" rx="7" fill="#222329" stroke="#41434d"/>
+    <text x="170" y="680">Super</text>
+    <text x="231" y="680" fill="#727580">+</text>
+    <rect x="250" y="653" width="78" height="42" rx="7" fill="#222329" stroke="#41434d"/>
+    <text x="289" y="680">Shift</text>
+    <text x="347" y="680" fill="#727580">+</text>
+    <rect x="366" y="653" width="45" height="42" rx="7" fill="#222329" stroke="#41434d"/>
+    <text x="388.5" y="680">R</text>
+  </g>
+</svg>
