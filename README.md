@@ -25,9 +25,6 @@ Version **0.6.0** · Omarchy 4 / Lua-based Hyprland · MIT license
 - Omarchy 4 with Lua-based Hyprland and Quickshell. Developed against
   **Omarchy 4.0.4 / Hyprland 0.56.2**; legacy `.conf` setups are unsupported.
 - Python 3.10+, `hyprctl`, `uwsm-app`, `gio`, `systemctl`, `busctl` and GNU `timeout`.
-  No pip dependencies.
-- The terminals and applications you want to restore. OpenCode recovery requires
-  `opencode` (1.x) or `opencode2` (2.x), matching the saved version.
 
 ## Install
 
