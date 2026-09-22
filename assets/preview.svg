@@ -14,7 +14,7 @@
     <rect x="98" y="82" width="34" height="4" rx="2" fill="#f38d70"/>
     <text x="148" y="91" font-size="18" letter-spacing="3" fill="#c3b7b8">AN OMARCHY PLUGIN</text>
     <text x="90" y="224" font-size="108" font-weight="700" letter-spacing="-4" fill="#e6d9db">Desktop <tspan fill="#fb9a77">Restore</tspan></text>
-    <text x="98" y="283" font-size="30" fill="#c3b7b8">Your desktop, ready to pick up where you left off.</text>
+    <text x="98" y="283" font-size="30" fill="#c3b7b8">Automatic saves * Restore with Super + Shift + R</text>
   </g>
   <path d="M98 329H1502" stroke="#7d4d3b" stroke-width="1.5"/>
 
@@ -52,7 +52,5 @@
   <g font-family="Liberation Sans, Arial, sans-serif">
     <circle cx="105" cy="808" r="5" fill="#fb9a77"/>
     <text x="124" y="816" font-size="23" fill="#c3b7b8">Automatic saves · 700 ms shutdown-save limit</text>
-    <rect x="1174" y="780" width="328" height="58" rx="7" fill="#f38d70"/>
-    <text x="1338" y="818" text-anchor="middle" font-size="27" font-weight="700" fill="#211b1b">Super + Shift + R</text>
   </g>
 </svg>
