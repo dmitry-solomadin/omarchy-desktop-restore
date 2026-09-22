@@ -19,7 +19,6 @@ from agents import read_process, terminal_agent
 from terminals import TERMINALS, terminal_launch
 
 HOME = Path.home()
-CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', HOME / '.config'))
 STATE = Path(os.environ.get('XDG_STATE_HOME', HOME / '.local/state')) / 'desktop-restore'
 SHELLS = {'bash', 'zsh', 'fish', 'sh', 'nu'}
 BROWSERS = {
@@ -281,16 +280,16 @@ def capture(fast=False):
     return {'version': 1, 'instance': instance(), 'saved': time.time(), 'windows': windows}
 
 
-def save(snapshot, explicit=False):
+def save(snapshot):
     if not snapshot['windows']:
         return
     with lock('state'):
         write_json(STATE / 'latest.json', snapshot)
-        if explicit or not (STATE / 'restore.json').exists():
+        if not (STATE / 'restore.json').exists():
             write_json(STATE / 'restore.json', snapshot)
 
 
-def save_shutdown(target=None, if_shutting_down=False):
+def save_shutdown(if_shutting_down=False):
     """Best effort only; caller enforces a process-group-wide 700 ms KILL deadline."""
     if if_shutting_down:
         preparing = run(['busctl', '--system', 'get-property', 'org.freedesktop.login1',
@@ -309,7 +308,7 @@ def save_shutdown(target=None, if_shutting_down=False):
             return
         if any(('OC | ' in w['title'] or w.get('kind') == 'agent-unresolved') and w.get('error') for w in snapshot['windows']):
             return  # retain the previous checkpoint rather than losing conversations
-        write_json(target or STATE / 'shutdown.json', snapshot)
+        write_json(STATE / 'shutdown.json', snapshot)
 
 
 def identity(w):
@@ -421,7 +420,7 @@ def wait_for_window(saved, before, claimed, browser_launched):
     raise RuntimeError('No matching window appeared within 15 seconds')
 
 
-def restore(snapshot, dry_run=False):
+def restore(snapshot):
     live = capture()['windows']
     claimed, launched_browsers, errors = set(), {}, []
     same = snapshot['instance'] == instance()
@@ -437,12 +436,6 @@ def restore(snapshot, dry_run=False):
             actual = next((w for w in live if w['address'] == remembered.get('address')
                            and w['pid'] == remembered.get('pid') and w['address'] not in claimed), None)
             actual = actual or existing_window(saved, live, claimed, same)
-            if dry_run:
-                print(('OPEN ' if not actual else 'EXISTS ') + label +
-                      (' — ' + saved['error'] if saved.get('error') else ''))
-                if actual:
-                    claimed.add(actual['address'])
-                continue
             if actual:
                 claimed.add(actual['address'])
                 # Do not move a window the user has already reopened or rearranged.
@@ -479,13 +472,10 @@ def restore(snapshot, dry_run=False):
         # Persist partial progress even if restoration is interrupted. Never
         # refocus the starting window: the user may have selected a restored one.
         # Initial focus protection belongs to the pre-map launch rules instead.
-        if not dry_run:
-            write_json(STATE / 'last-result.json', {'restored': restored, 'already_open': already, 'errors': errors})
-    if not dry_run:
-        report(f'Reopened {restored}; already open {already}; skipped/failed {len(errors)}.' +
-               (' Run desktop-restore status for details.' if errors else ''))
-        for error in errors:
-            print(error, file=sys.stderr)
+        write_json(STATE / 'last-result.json', {'restored': restored, 'already_open': already, 'errors': errors})
+    report(f'Reopened {restored}; already open {already}; skipped/failed {len(errors)}.')
+    for error in errors:
+        print(error, file=sys.stderr)
     return not errors
 
 
@@ -516,67 +506,28 @@ def watch():
             time.sleep(10)
 
 
-def status(target):
-    snapshot = read_json(target, {})
-    latest = read_json(STATE / 'latest.json', {})
-    return {
-        'installed': (CONFIG / 'systemd/user/omarchy-desktop-restore.service').exists(),
-        'saved': snapshot.get('saved'),
-        'latest_saved': latest.get('saved'),
-        'windows': [{k: w[k] for k in ('workspace', 'kind', 'title', 'error') if k in w}
-                    for w in snapshot.get('windows', [])],
-        'last_result': read_json(STATE / 'last-result.json'),
-    }
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['save', 'save-shutdown', 'restore', 'status', 'watch'])
-    parser.add_argument('--dry-run', action='store_true')
-    parser.add_argument('--json', action='store_true', help='Machine-readable checkpoint status')
-    parser.add_argument('--file', type=Path, help='Use a separate snapshot (for testing or a named layout)')
+    parser.add_argument('command', choices=['save-shutdown', 'restore', 'watch'])
     parser.add_argument('--if-shutting-down', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     os.umask(0o077)
-    target = args.file or STATE / 'restore.json'
-    if args.command == 'status':
-        data = status(target)
-        if args.json:
-            print(json.dumps(data))
-            return 0
-        for label, key in (('Restore checkpoint', 'saved'), ('Latest automatic checkpoint', 'latest_saved')):
-            value = data[key]
-            print(label + ':', time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(value)) if value else 'none')
-        for w in data['windows']:
-            print(f"  {w['workspace']:>8}  {w['kind']:10}  {w['title']}" +
-                  (f"\n             WARNING: {w['error']}" if 'error' in w else ''))
-        if data['last_result']:
-            print('Last restore:', json.dumps(data['last_result'], indent=2))
-        return 0
     if args.command == 'save-shutdown':
         # Failure is deliberately silent and successful from the shutdown caller's view.
         try:
-            save_shutdown(args.file, args.if_shutting_down)
+            save_shutdown(if_shutting_down=args.if_shutting_down)
         except Exception:
             pass
         return 0
     initialize()
-    if args.command == 'save':
-        with lock('restore'):
-            snapshot = capture()
-            if args.file:
-                write_json(target, snapshot)
-            else:
-                save(snapshot, explicit=True)
-        report(f"Saved {len(snapshot['windows'])} windows; {sum('error' in w for w in snapshot['windows'])} need attention.")
-    elif args.command == 'watch':
+    if args.command == 'watch':
         watch()
     else:
-        snapshot = read_json(target)
+        snapshot = read_json(STATE / 'restore.json')
         if not snapshot:
-            raise RuntimeError('No desktop checkpoint yet. Run desktop-restore save.')
+            raise RuntimeError('No automatic desktop checkpoint is available yet.')
         with lock('restore', blocking=False):
-            return 0 if restore(snapshot, args.dry_run) else 1
+            return 0 if restore(snapshot) else 1
     return 0
 
 

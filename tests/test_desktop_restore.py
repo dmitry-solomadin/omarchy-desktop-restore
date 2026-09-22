@@ -90,27 +90,41 @@ class CheckpointTests(unittest.TestCase):
                     self.assertEqual(result.stdout, 'power reached\n')
                     self.assertLess(time.monotonic() - start, 1.5)
 
-    def test_json_status_is_read_only_and_works_without_a_checkpoint(self):
-        with patch.object(app, 'CONFIG', Path(self.temp.name) / 'config'):
-            result = app.status(app.STATE / 'restore.json')
-        self.assertEqual(result['windows'], [])
-        self.assertIsNone(result['saved'])
+    def test_removed_manual_commands_are_rejected_without_touching_state(self):
+        for args in (['save'], ['status'], ['status', '--json'], ['restore', '--dry-run'],
+                     ['restore', '--file', '/unused.json']):
+            with self.subTest(args=args), patch.object(sys, 'argv', ['desktop-restore', *args]), \
+                 patch.object(app, 'initialize', side_effect=AssertionError('unexpected initialization')), \
+                 patch.object(sys, 'stderr'):
+                with self.assertRaises(SystemExit) as error:
+                    app.main()
+                self.assertEqual(error.exception.code, 2)
         self.assertFalse(app.STATE.exists())
 
-    def test_text_status_does_not_initialize_or_rotate_checkpoints(self):
-        with patch.object(sys, 'argv', ['desktop-restore', 'status']), \
-             patch.object(app.os, 'umask'), \
-             patch.object(app, 'initialize', side_effect=AssertionError('status must be read-only')), \
-             patch('builtins.print'):
+    def test_shortcut_restore_uses_the_automatic_restore_target(self):
+        snapshot = {'instance': 'old-login', 'windows': [{'title': 'saved'}]}
+        app.write_json(app.STATE / 'restore.json', snapshot)
+        app.write_json(app.STATE / 'instance.json', {'instance': 'test-instance'})
+        with patch.object(sys, 'argv', ['desktop-restore', 'restore']), \
+             patch.object(app.os, 'umask'), patch.object(app, 'restore', return_value=True) as restore:
             self.assertEqual(app.main(), 0)
-        self.assertFalse(app.STATE.exists())
+        restore.assert_called_once_with(snapshot)
+
+    def test_internal_shutdown_command_remains_silent_and_fail_open(self):
+        with patch.object(sys, 'argv', ['desktop-restore', 'save-shutdown', '--if-shutting-down']), \
+             patch.object(app.os, 'umask'), patch.object(app, 'save_shutdown', side_effect=RuntimeError('unavailable')) as save, \
+             patch.object(app, 'initialize') as initialize, patch('builtins.print') as output:
+            self.assertEqual(app.main(), 0)
+        save.assert_called_once_with(if_shutting_down=True)
+        initialize.assert_not_called()
+        output.assert_not_called()
 
     def test_new_login_keeps_previous_snapshot_despite_new_autosaves(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'STATE', Path(directory)):
             with patch.dict(os.environ, HYPRLAND_INSTANCE_SIGNATURE='old-login'):
                 app.initialize()
                 old = {'windows': [{'title': 'work'}], 'instance': 'old-login'}
-                app.save(old, explicit=True)
+                app.save(old)
             with patch.dict(os.environ, HYPRLAND_INSTANCE_SIGNATURE='new-login'):
                 app.initialize()
                 app.save({'windows': [{'title': 'new terminal'}], 'instance': 'new-login'})

@@ -3,7 +3,7 @@
 Save your Omarchy desktop automatically and restore it after reboot with
 **Super+Shift+R**. Runs silently in the background, with no bar widget or notifications.
 
-Version **0.3.2** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.4.0** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -38,35 +38,11 @@ omarchy plugin add https://github.com/dmitry-solomadin/omarchy-desktop-restore -
 ```
 
 Both commands are required: the first adds the plugin; the second installs its
-services, shortcut, CLI and power-menu entries. Setup preserves existing settings
+services, shortcut and power-menu entries. Setup preserves existing settings
 and reports conflicting shortcuts or custom power actions.
 
 After updating the plugin or installing another supported agent, run
 `desktop-restore install` again to refresh the integration.
-
-## Use
-
-1. Work normally; changes are checkpointed after about 20–30 seconds of stability.
-2. Reboot or shut down through Omarchy's menu for a final save before windows close.
-3. After login, press **Super+Shift+R** or run `desktop-restore restore`.
-
-Already-open matching windows stay where you put them. You can keep working and
-switch workspaces while restoration runs.
-
-| Command | Purpose |
-| --- | --- |
-| `desktop-restore restore` | Restore missing windows |
-| `desktop-restore restore --dry-run` | Preview the restore |
-| `desktop-restore status` | Show the checkpoint and last restore result |
-| `desktop-restore status --json` | Machine-readable status |
-| `desktop-restore save` | Save now and replace the current restore target |
-
-Use `--file` for a named snapshot:
-
-```sh
-desktop-restore save --file "$HOME/work-desktop.json"
-desktop-restore restore --file "$HOME/work-desktop.json"
-```
 
 ## Agent setup
 
@@ -159,10 +135,10 @@ State is stored in `${XDG_STATE_HOME:-~/.local/state}/desktop-restore/`.
 window titles, directories and session IDs. Prompts, responses and credentials
 are not copied; browser tabs remain in the browser's own storage.
 
-For skipped windows or restore errors:
+The last restore result, including skipped windows and errors, is recorded in
+`last-result.json`. For background-service diagnostics:
 
 ```sh
-desktop-restore status
 systemctl --user status omarchy-desktop-restore.service
 journalctl --user -u omarchy-desktop-restore.service
 ```
@@ -197,8 +173,8 @@ and WezTerm have regression coverage but have not been tested live on the develo
 ## Feedback
 
 [Report a bug or request a feature](https://github.com/dmitry-solomadin/omarchy-desktop-restore/issues).
-Include your Omarchy and Hyprland versions, the app involved, and whether you
-restored through the shortcut or CLI. Review diagnostic output before sharing:
+Include your Omarchy and Hyprland versions, the app involved, and what failed
+when restoring. Review diagnostic output before sharing:
 checkpoint files can contain private window titles, directories and session IDs.
 
 Licensed under [MIT](LICENSE).
