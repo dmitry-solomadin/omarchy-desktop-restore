@@ -65,21 +65,8 @@ responses. Missing, stale or ambiguous records are skipped.
 
 ### herdr
 
-Desktop Restore reopens the same default or named session, including sessions
-selected through `HERDR_SESSION`. Herdr restores its own workspaces, tabs and panes.
-
-**To recover agent conversations after reboot**, install herdr's own integrations:
-
-```bash
-herdr integration status
-herdr integration install claude
-herdr integration install codex
-```
-
-Restart the agents inside herdr afterward and follow any Codex hook-trust prompts.
-Keep `session.resume_agents_on_restore` enabled. Herdr 0.8.2 requires Claude
-integration v6+ and Codex integration v5+. Without a valid native session reference,
-an agent pane returns as a shell after a server restart.
+Restores default and named sessions. Agent conversations inside panes use herdr's
+native session recovery and require the relevant herdr integrations.
 
 ## Saving and reboot coverage
 
