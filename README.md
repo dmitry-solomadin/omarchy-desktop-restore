@@ -13,14 +13,12 @@ Version **0.3.2** · Omarchy 4 / Lua-based Hyprland · MIT license
   each in its original emulator and working directory.
 - **Agent harnesses:** exact-session resume for OpenCode 2, Claude Code and Codex;
   default and named herdr sessions. OpenCode 1 is not currently supported.
-- **Browsers:** Chrome, Chromium, Brave, Firefox and Zen, using native session recovery.
+- **Regular application windows:** reopens apps such as Signal and browsers such
+  as Chrome, Chromium, Brave, Firefox and Zen, using each app's native recovery.
 - **Desktop layout:** numbered, named and special workspaces, connected monitors,
   floating window position/size and fullscreen state.
-- **On-demand restore:** reopens missing windows without duplicating matched ones
-  or taking focus away from your work.
-- **Automatic saving:** rolling checkpoints and a final power-menu save limited
-  to 700 ms. Reboot/shutdown proceeds even if saving fails.
-- **Automatic cleanup:** normal plugin removal cleans up the installed integration.
+- **700 ms save limit:** the final power-menu save has a hard cutoff, so saving
+  cannot hold up reboot or shutdown beyond 700 ms. Background checkpoints are automatic.
 
 ## Requirements
 
