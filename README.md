@@ -343,7 +343,6 @@ sh -n bin/power-action
 ```
 
 The tests isolate state and replace power commands with harmless substitutes.
-See [release preparation](RELEASING.md) for validation coverage and publishing.
 
 ## Feedback
 
@@ -352,4 +351,4 @@ Include your Omarchy and Hyprland versions, the app involved, and whether you
 restored through the shortcut or CLI. Review diagnostic output before sharing:
 checkpoint files can contain private window titles, directories and session IDs.
 
-See [CHANGELOG.md](CHANGELOG.md) for changes. Licensed under [MIT](LICENSE).
+Licensed under [MIT](LICENSE).
