@@ -141,13 +141,21 @@ class Setup:
 
     @contextmanager
     def lock(self):
-        # Shell reloads can start another setup process before the first exits.
-        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with (self.state / 'setup.lock').open('a') as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX)
+        # Lock the shared state parent so deleting our state cannot leave waiters
+        # holding an obsolete lock inode or recreate a setup.lock after removal.
+        self.state.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.state.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            if self.state.is_symlink():
+                raise RuntimeError(f'State directory is a symlink: {self.state}')
             yield
+        finally:
+            os.close(fd)
 
     def execute(self, command):
+        if command == 'start' and not self.root.is_dir():
+            return
         if command == 'watch-removal':
             self.watch_removal()
         else:
@@ -402,9 +410,29 @@ UMask=0077
             raise
         print('Installed. Super+Shift+R restores; reboot/shutdown save silently with a 700 ms cutoff.')
 
+    def purge_data(self, receipt=None):
+        # Older installers did not record backup names. Only match our exact
+        # numeric suffix alongside paths in the installation receipt.
+        for item in (receipt or {}).get('files', []):
+            path = Path(item['path'])
+            if not path.parent.exists():
+                continue
+            pattern = re.compile(re.escape(path.name) + r'\.bak\.desktop-restore-\d+\Z')
+            for backup in path.parent.iterdir():
+                if pattern.fullmatch(backup.name):
+                    backup.unlink()
+        # The sibling directory holds Desktop Restore migration/update backups.
+        # Unlink symlinks rather than traversing their targets.
+        for path in (self.state.with_name('desktop-restore-backups'), self.state):
+            if path.is_symlink():
+                path.unlink()
+            elif path.exists():
+                shutil.rmtree(path)
+
     def uninstall(self, from_monitor=False):
         if not self.receipt.exists():
-            print('Desktop Restore integration is not installed.')
+            self.purge_data()
+            print('Desktop Restore integration is not installed; saved data removed.')
             return
         receipt = json.loads(self.receipt.read_text())
         changes = []
@@ -437,15 +465,17 @@ UMask=0077
         run(['systemctl', '--user', 'stop', UNIT])
         if not from_monitor and (self.config / 'systemd/user' / LIFECYCLE_UNIT).exists():
             run(['systemctl', '--user', 'stop', LIFECYCLE_UNIT])
-        for path, text, mode in changes:
-            write(path, text, mode)
-        run(['systemctl', '--user', 'daemon-reload'])
-        run(['hyprctl', 'reload'])
-        errors = run(['hyprctl', 'configerrors'])
-        if errors:
-            raise RuntimeError(errors)
-        self.receipt.unlink()
-        print('Removed the watcher, startup hook, shortcut and power-menu integration. Checkpoints retained.')
+        # Keep integration and its receipt recoverable if validation or cleanup
+        # fails. Delete saved data only after the configuration is validated.
+        changes.append((self.receipt, self.receipt.read_text(), 0o600))
+        with file_transaction(changes):
+            run(['systemctl', '--user', 'daemon-reload'])
+            run(['hyprctl', 'reload'])
+            errors = run(['hyprctl', 'configerrors'])
+            if errors:
+                raise RuntimeError(errors)
+            self.purge_data(receipt)
+        print('Removed Desktop Restore integration, checkpoints, caches, session records and backups.')
 
 
 if __name__ == '__main__':

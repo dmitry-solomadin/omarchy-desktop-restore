@@ -3,7 +3,7 @@
 Save your Omarchy desktop automatically and restore it after reboot with
 **Super+Shift+R**. Runs silently in the background, with no bar widget or notifications.
 
-Version **0.6.0** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.6.1** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -120,9 +120,10 @@ journalctl --user -u omarchy-desktop-restore.service
 omarchy plugin remove io.github.dmitry-solomadin.desktop-restore
 ```
 
-Within about six seconds, managed services, hooks, shortcuts and menu entries are
-removed. Checkpoints and unrelated settings are kept. Disabling the plugin or
-restarting the shell does not trigger cleanup.
+Within about six seconds, all Desktop Restore integration and data are deleted,
+including services, hooks, shortcuts, menu entries, checkpoints, caches and backups.
+Unrelated settings are preserved. Disabling the plugin or restarting the shell
+does not trigger cleanup.
 
 Conflicts with edited managed files are reported in
 `journalctl --user -u omarchy-desktop-restore-lifecycle.service`.

@@ -61,7 +61,8 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.integration.menu.read_text(), self.original_menu)
         self.assertEqual(self.integration.bindings.read_text(), '-- My keybindings\n')
         self.assertFalse((self.home / '.local/bin/desktop-restore').exists())
-        self.assertFalse(self.integration.receipt.exists())
+        self.assertFalse(self.integration.state.exists())
+        self.assertEqual(list(self.home.rglob('*.bak.desktop-restore-*')), [])
 
     def test_install_on_foot_only_desktop_does_not_require_ghostty(self):
         with patch.object(setup.shutil, 'which', side_effect=lambda command:
@@ -171,7 +172,7 @@ class SetupTests(unittest.TestCase):
 
     def test_shell_start_does_not_recreate_a_removed_plugin(self):
         self.integration.execute('start')
-        self.assertFalse(self.integration.receipt.exists())
+        self.assertFalse(self.integration.state.exists())
         self.assertEqual(self.commands, [])
 
     def test_auto_setup_conflict_preserves_user_configuration(self):
@@ -283,7 +284,7 @@ class SetupTests(unittest.TestCase):
         self.integration.root.mkdir()
         self.integration.install()
         saved = self.integration.state / 'restore.json'
-        saved.write_text('{"windows": ["keep this checkpoint"]}')
+        saved.write_text('{"windows": ["delete this checkpoint"]}')
         helper = self.integration.state / 'cleanup.py'
         fakebin = self.home / 'fakebin'
         fakebin.mkdir()
@@ -306,7 +307,84 @@ class SetupTests(unittest.TestCase):
         self.assertFalse((self.home / '.config/omarchy/hooks/post-boot.d/desktop-restore').exists())
         self.assertEqual(self.integration.menu.read_text(), self.original_menu)
         self.assertEqual(self.integration.bindings.read_text(), '-- My keybindings\n')
-        self.assertIn('keep this checkpoint', saved.read_text())
+        self.assertFalse(self.integration.state.exists())
+        self.assertEqual(list(self.home.rglob('*.bak.desktop-restore-*')), [])
+        self.integration.execute('start')
+        self.assertFalse(self.integration.state.exists())
+
+    def test_uninstall_removes_all_private_data_and_legacy_backups(self):
+        self.integration.execute('install')
+        for name in ('latest.json', 'restore.json', 'shutdown.json', 'sessions-cache.json',
+                     'sessions-v1-test.json', 'last-result.json', 'instance.json',
+                     'restored-windows.json', 'setup.lock', 'watch.lock', 'restore.lock', 'state.lock'):
+            (self.integration.state / name).write_text('private data')
+        agents = self.integration.state / 'agents'
+        agents.mkdir()
+        (agents / 'claude-123.json').write_text('session identity')
+        backups = self.integration.state.with_name('desktop-restore-backups')
+        backups.mkdir()
+        (backups / 'old-migration.tar.gz').write_bytes(b'backup')
+        legacy = self.integration.bindings.with_name('bindings.lua.bak.desktop-restore-20260918')
+        legacy.write_text('old installer backup')
+        unrelated = legacy.with_name('bindings.lua.bak.personal')
+        unrelated.write_text('personal backup')
+        other_state = self.integration.state.parent / 'other-app.json'
+        other_state.write_text('other app')
+        self.integration.execute('uninstall')
+        self.assertFalse(self.integration.state.exists())
+        self.assertFalse(backups.exists())
+        self.assertFalse(legacy.exists())
+        self.assertEqual(list(self.home.rglob('*.bak.desktop-restore-*')), [])
+        self.assertEqual(unrelated.read_text(), 'personal backup')
+        self.assertEqual(other_state.read_text(), 'other app')
+        self.integration.execute('uninstall')  # Repeated cleanup leaves no lock file.
+        self.assertFalse(self.integration.state.exists())
+
+    def test_data_cleanup_does_not_follow_symlinks(self):
+        self.integration.execute('install')
+        external = self.home / 'external'
+        external.mkdir()
+        sentinel = external / 'keep.json'
+        sentinel.write_text('unrelated data')
+        (self.integration.state / 'linked').symlink_to(external, target_is_directory=True)
+        backups = self.integration.state.with_name('desktop-restore-backups')
+        backups.symlink_to(external, target_is_directory=True)
+        self.integration.execute('uninstall')
+        self.assertFalse(self.integration.state.exists())
+        self.assertFalse(backups.is_symlink())
+        self.assertEqual(sentinel.read_text(), 'unrelated data')
+
+    def test_cleanup_without_receipt_removes_leftover_saved_data(self):
+        self.integration.state.mkdir(parents=True)
+        (self.integration.state / 'restore.json').write_text('old checkpoint')
+        self.integration.execute('uninstall')
+        self.assertFalse(self.integration.state.exists())
+
+    def test_uninstall_conflict_keeps_data_for_retry(self):
+        self.integration.execute('install')
+        saved = self.integration.state / 'restore.json'
+        saved.write_text('checkpoint')
+        launcher = self.home / '.local/bin/desktop-restore'
+        launcher.write_text('#!/bin/sh\necho edited\n')
+        with self.assertRaisesRegex(RuntimeError, 'Managed content was edited'):
+            self.integration.execute('uninstall')
+        self.assertEqual(saved.read_text(), 'checkpoint')
+        self.assertTrue(self.integration.receipt.exists())
+
+    def test_failed_uninstall_validation_restores_integration_for_retry(self):
+        self.integration.execute('install')
+        saved = self.integration.state / 'restore.json'
+        saved.write_text('checkpoint')
+        before = self.integration.receipt.read_bytes()
+        with patch.object(setup, 'run', side_effect=lambda args:
+                          'Invalid configuration' if args == ['hyprctl', 'configerrors'] else ''):
+            with self.assertRaisesRegex(RuntimeError, 'Invalid configuration'):
+                self.integration.execute('uninstall')
+        self.assertEqual(saved.read_text(), 'checkpoint')
+        self.assertEqual(self.integration.receipt.read_bytes(), before)
+        self.assertTrue((self.integration.state / 'cleanup.py').exists())
+        self.integration.execute('uninstall')
+        self.assertFalse(self.integration.state.exists())
 
     def test_monitor_ignores_shell_disable_and_brief_folder_replacement(self):
         self.integration.root.mkdir()
