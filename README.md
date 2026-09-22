@@ -3,7 +3,7 @@
 Save your Omarchy desktop automatically and restore it after reboot with
 **Super+Shift+R**. Runs silently in the background, with no bar widget or notifications.
 
-Version **0.6.1** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.6.2** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
@@ -38,6 +38,12 @@ Enabling the plugin automatically installs its services, shortcut, power-menu
 entries and hooks for installed agents. Plugin updates refresh the integration
 on the next load; ordinary shell reloads do not reinstall or restart it.
 Existing settings are preserved. Setup conflicts appear in the Omarchy shell logs.
+
+Setup runs without root. It manages two user services:
+`omarchy-desktop-restore.service` saves checkpoints, and
+`omarchy-desktop-restore-lifecycle.service` handles removal cleanup.
+A user post-boot hook starts both; the restore shortcut and power-menu entries
+are added to user configuration.
 
 If you install a supported agent later, re-enable the plugin or restart the shell
 to pick up its hooks. Agent-specific setup below still applies.

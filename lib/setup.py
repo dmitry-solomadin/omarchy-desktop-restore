@@ -73,7 +73,7 @@ def menu_block(text, wrapper):
     existing = parse_jsonc(text)
     for key in ('system.reboot', 'system.shutdown'):
         if key in existing:
-            raise RuntimeError(f'{key} is already customized. Integrate the power wrapper manually; see README.md under Power-menu integration.')
+            raise RuntimeError(f'{key} is already customized. Resolve that menu entry before installation.')
     end = jsonc_text(text).rfind('}')
     last = jsonc_text(text[:end]).rstrip()[-1]
     rows = []
@@ -269,7 +269,7 @@ UMask=0077
 '''
         return self.config / 'systemd/user' / UNIT, unit, 0o600
 
-    def refresh_lifecycle(self):
+    def upgrade(self):
         """Upgrade existing receipts without removing/recreating user integration."""
         receipt = json.loads(self.receipt.read_text())
         changes = []
@@ -300,6 +300,7 @@ UMask=0077
         changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
         with file_transaction(changes):
             run(['systemctl', '--user', 'daemon-reload'])
+            run(['systemctl', '--user', 'restart', UNIT, LIFECYCLE_UNIT])
 
     def watch_removal(self):
         """Ignore shell unloads; clean up only after the source folder disappears."""
@@ -383,18 +384,14 @@ UMask=0077
     def install(self):
         entries = self.plan()
         if entries is None:
-            self.refresh_lifecycle()
-            run(['systemctl', '--user', 'restart', UNIT, LIFECYCLE_UNIT])
+            self.upgrade()
             print('Desktop Restore integration already installed; watcher restarted.')
             return
-        stamp = str(time.time_ns())
         changes = [(Path(item['path']), item['after'], item['mode']) for item in entries]
+        # The receipt stores the original contents and modes for uninstall;
+        # file_transaction also restores them on a failed install.
         receipt = {'root': str(self.root), 'revision': self.revision(), 'files': entries}
         changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
-        for item in entries:
-            if item['before'] is not None:
-                path = Path(item['path'])
-                shutil.copy2(path, path.with_name(path.name + '.bak.desktop-restore-' + stamp))
         try:
             with file_transaction(changes):
                 run(['hyprctl', 'reload'])

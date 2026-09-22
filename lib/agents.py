@@ -179,11 +179,8 @@ def herdr_session(args, env=None):
     return selected
 
 
-def codex_mode(args):
-    # Global options can precede the subcommand (codex -p work exec ...).
-    valued = {'-c', '--config', '-p', '--profile', '-m', '--model', '-s', '--sandbox',
-              '-a', '--ask-for-approval', '-C', '--cd', '--enable', '--disable',
-              '-i', '--image', '--local-provider', '--add-dir', '--remote', '--remote-auth-token-env'}
+def first_positional(args, valued):
+    """Find a subcommand/project after global options, skipping their values."""
     skip = False
     for arg in args:
         if skip:
@@ -195,6 +192,13 @@ def codex_mode(args):
         elif not arg.startswith('-'):
             return arg
     return None
+
+
+def codex_mode(args):
+    return first_positional(args, {
+        '-c', '--config', '-p', '--profile', '-m', '--model', '-s', '--sandbox',
+        '-a', '--ask-for-approval', '-C', '--cd', '--enable', '--disable',
+        '-i', '--image', '--local-provider', '--add-dir', '--remote', '--remote-auth-token-env'})
 
 
 def terminal_branch(window, procs, siblings):
@@ -228,20 +232,9 @@ def terminal_branch(window, procs, siblings):
 
 
 def opencode_mode(args):
-    """Find a subcommand/project after global options without treating values as commands."""
-    valued = {'--session', '-s', '--model', '-m', '--agent', '--prompt', '--port',
-              '--hostname', '--log-level', '--password', '--username'}
-    skip = False
-    for arg in args:
-        if skip:
-            skip = False
-        elif arg == '--':
-            return None
-        elif arg in valued:
-            skip = True
-        elif not arg.startswith('-'):
-            return arg
-    return None
+    return first_positional(args, {
+        '--session', '-s', '--model', '-m', '--agent', '--prompt', '--port',
+        '--hostname', '--log-level', '--password', '--username', '--server'})
 
 
 def terminal_agent(window, procs, state, shared=False, siblings=None):
@@ -286,7 +279,7 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
     if len(herdr) == 1:
         inner = descendants(herdr[0][0], procs)
         candidates = [c for c in candidates if c[0] not in inner]
-    # The npm Codex shim and its native child represent one interactive CLI.
+    # An npm shim and its native child represent one interactive CLI.
     candidates = [c for c in candidates if not (Path(procs[c[0]]['cmd'][0]).name in ('node', 'nodejs', 'bun')
                   and any(other[1] == c[1] and other[0] in descendants(c[0], procs) for other in candidates if other != c))]
     if len(candidates) != 1:

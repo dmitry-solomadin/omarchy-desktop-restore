@@ -48,6 +48,33 @@ class CheckpointTests(unittest.TestCase):
                 client.update(workspace={'id': 1}, at=[0, 0])
                 app.capture(fast=True)
 
+    def test_cancelled_shutdown_does_not_override_newer_desktop_work(self):
+        app.write_json(app.STATE / 'instance.json', {'instance': 'old-login'})
+        app.write_json(app.STATE / 'shutdown.json', {'instance': 'old-login', 'saved': 100,
+                                                   'windows': [{'title': 'before cancelled reboot'}]})
+        latest = {'instance': 'old-login', 'saved': 200, 'windows': [{'title': 'new work'}]}
+        app.write_json(app.STATE / 'latest.json', latest)
+        app.initialize()
+        self.assertEqual(app.read_json(app.STATE / 'restore.json'), latest)
+
+    def test_service_stop_retries_save_after_a_cancelled_shutdown(self):
+        app.write_json(app.STATE / 'shutdown.json', {'instance': 'test-instance', 'saved': 100})
+        app.write_json(app.STATE / 'latest.json', {'instance': 'test-instance', 'saved': 200})
+        fresh = {'instance': 'test-instance', 'saved': 300, 'windows': [{'title': 'fresh'}]}
+        with patch.object(app, 'run', return_value='b true'), patch.object(app, 'capture', return_value=fresh):
+            app.save_shutdown(if_shutting_down=True)
+        self.assertEqual(app.read_json(app.STATE / 'shutdown.json'), fresh)
+
+    def test_watcher_pauses_during_shutdown_and_resumes_if_cancelled(self):
+        with patch.object(app, 'preparing_for_shutdown', side_effect=[True, False]), \
+             patch.object(app, 'capture', return_value={'windows': []}) as capture, \
+             patch.object(app.time, 'sleep', side_effect=[None, InterruptedError('end test')]), \
+             patch.object(app, 'save') as save:
+            with self.assertRaises(InterruptedError):
+                app.watch()
+        capture.assert_called_once()
+        save.assert_not_called()
+
     def test_shutdown_lock_contention_returns_immediately(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'STATE', Path(directory)):
             with app.lock('restore'):

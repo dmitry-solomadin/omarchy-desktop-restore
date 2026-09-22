@@ -115,6 +115,25 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(path.is_symlink())
         self.assertTrue(self.integration.receipt.exists())
 
+    def test_failed_service_restart_rolls_back_upgrade_receipt_and_files(self):
+        self.integration.root.mkdir()
+        self.integration.install()
+        (self.integration.root / 'manifest.json').write_text('{"version":"new"}')
+        receipt = json.loads(self.integration.receipt.read_text())
+        paths = [Path(item['path']) for item in receipt['files']] + [self.integration.receipt]
+        before = {path: path.read_bytes() for path in paths}
+
+        def fail_restart(args):
+            if 'restart' in args:
+                raise RuntimeError('Service restart failed')
+            return ''
+
+        with patch.object(setup, 'run', side_effect=fail_restart):
+            with self.assertRaisesRegex(RuntimeError, 'restart failed'):
+                self.integration.start()
+        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+        self.assertNotEqual(json.loads(self.integration.receipt.read_text())['revision'], self.integration.revision())
+
     def test_uninstall_preserves_unrelated_later_config_changes(self):
         self.integration.install()
         with self.integration.bindings.open('a') as stream:
@@ -254,6 +273,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(self.integration.bindings.read_text(), '-- My keybindings\n')
         self.assertFalse((self.home / '.local/bin/desktop-restore').exists())
         self.assertFalse(self.integration.receipt.exists())
+        self.assertEqual(list(self.home.rglob('*.bak.desktop-restore-*')), [])
 
     def test_jsonc_handles_urls_escaped_quotes_comments_and_trailing_commas(self):
         text = r'''{

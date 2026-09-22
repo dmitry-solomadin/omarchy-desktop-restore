@@ -100,7 +100,8 @@ def initialize():
             return
         latest = read_json(STATE / 'latest.json')
         shutdown = read_json(STATE / 'shutdown.json')
-        if shutdown and shutdown.get('instance') == meta.get('instance'):
+        if (shutdown and shutdown.get('instance') == meta.get('instance')
+                and (not latest or shutdown.get('saved', 0) >= latest.get('saved', 0))):
             latest = shutdown
         if latest and latest['windows']:
             write_json(STATE / 'restore.json', latest)
@@ -137,13 +138,14 @@ def terminal_cwd(window, procs):
     raise ValueError('Cannot identify this terminal window’s working directory')
 
 
-def sessions():
+def sessions(env=None):
     result, cursor = [], None
     for _ in range(50):
         query = {'limit': 100}
         if cursor:
             query['cursor'] = cursor
-        page = json.loads(run(['opencode2', 'api', 'get', '/api/session?' + urllib.parse.urlencode(query)], 20))
+        page = json.loads(run(with_env(
+            ['opencode2', 'api', 'get', '/api/session?' + urllib.parse.urlencode(query)], env), 20))
         result.extend(page['data'])
         cursor = (page.get('cursor') or {}).get('next')
         if not cursor or not page['data']:
@@ -152,6 +154,9 @@ def sessions():
 
 
 def session_for_title(title, available):
+    if not isinstance(available, list) or any(
+            not isinstance(s, dict) or not isinstance(s.get('title'), str) for s in available):
+        raise ValueError('Invalid OpenCode session metadata')
     label = title.split('OC | ', 1)[1].strip()
     truncated = label.endswith('…')
     prefix = label[:-1] if truncated else label
@@ -163,6 +168,12 @@ def session_for_title(title, available):
 
 def with_env(argv, env):
     return ['env', *[f'{key}={value}' for key, value in sorted(env.items())], *argv] if env else argv
+
+
+def opencode_context(env):
+    """Treat explicit default XDG paths like older checkpoints without an environment."""
+    defaults = {'XDG_CONFIG_HOME': str(HOME / '.config'), 'XDG_DATA_HOME': str(HOME / '.local/share')}
+    return {key: value for key, value in env.items() if value != os.environ.get(key, defaults.get(key))}
 
 
 def sessions_v1(cwd, env):
@@ -255,13 +266,16 @@ def capture(fast=False):
             context = json.dumps([agent['cwd'], agent['agent_env']], sort_keys=True)
             filename = 'sessions-v1-' + hashlib.sha256(context.encode()).hexdigest()[:16] + '.json'
         else:
-            filename = 'sessions-cache.json'  # Preserve existing V2 shutdown caches.
+            context = opencode_context(agent['agent_env'])
+            filename = ('sessions-v2-' + hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()[:16] + '.json'
+                        if context else 'sessions-cache.json')
         if filename not in session_cache:
             try:
                 if fast:
                     data = read_json(STATE / filename, [])
                 else:
-                    data = sessions_v1(agent['cwd'], agent['agent_env']) if agent['kind'] == 'opencode1' else sessions()
+                    data = (sessions_v1(agent['cwd'], agent['agent_env']) if agent['kind'] == 'opencode1'
+                            else sessions(agent['agent_env']))
                     data = [{key: s[key] for key in ('id', 'title', 'location')} for s in data]
                     write_json(STATE / filename, data)
                 session_cache[filename] = data
@@ -339,17 +353,21 @@ def save(snapshot):
             write_json(STATE / 'restore.json', snapshot)
 
 
+def preparing_for_shutdown():
+    return run(['busctl', '--system', 'get-property', 'org.freedesktop.login1',
+                '/org/freedesktop/login1', 'org.freedesktop.login1.Manager',
+                'PreparingForShutdown'], timeout=0.15) == 'b true'
+
+
 def save_shutdown(if_shutting_down=False):
     """Best effort only; caller enforces a process-group-wide 700 ms KILL deadline."""
     if if_shutting_down:
-        preparing = run(['busctl', '--system', 'get-property', 'org.freedesktop.login1',
-                         '/org/freedesktop/login1', 'org.freedesktop.login1.Manager',
-                         'PreparingForShutdown'], timeout=0.15)
-        if preparing != 'b true':
+        if not preparing_for_shutdown():
             return
         # The menu saved before closing windows. Never replace that with teardown.
         saved = read_json(STATE / 'shutdown.json', {})
-        if saved.get('instance') == instance():
+        latest = read_json(STATE / 'latest.json', {})
+        if saved.get('instance') == instance() and saved.get('saved', 0) >= latest.get('saved', 0):
             return
     # No initialization/rotation, waiting for locks, OpenCode requests, or notifications.
     with lock('restore', blocking=False), lock('state', blocking=False):
@@ -368,7 +386,7 @@ def identity(w):
         session = w.get('session') or ('default' if w['kind'] == 'herdr' else None)
         return (w['kind'], session, tuple(sorted(w.get('agent_env', {}).items())))
     if w['kind'] == 'opencode':
-        return ('opencode', w.get('session'))
+        return ('opencode', w.get('session'), tuple(sorted(opencode_context(w.get('agent_env', {})).items())))
     if w['kind'] in ('terminal', 'opencode-home'):
         return (w['kind'], w['class'], w.get('cwd'))
     return (w['kind'], w['class'])
@@ -541,13 +559,16 @@ def watch():
         previous, changed = None, time.monotonic()
         while True:
             try:
-                with lock('restore', blocking=False):
-                    snapshot = capture()
-                    current = signature(snapshot)
-                    if current != previous:
-                        previous, changed = current, time.monotonic()
-                    elif time.monotonic() - changed >= 20:
-                        save(snapshot)
+                if preparing_for_shutdown():
+                    previous = None  # Never autosave a partially torn-down desktop.
+                else:
+                    with lock('restore', blocking=False):
+                        snapshot = capture()
+                        current = signature(snapshot)
+                        if current != previous:
+                            previous, changed = current, time.monotonic()
+                        elif time.monotonic() - changed >= 20:
+                            save(snapshot)
             except BlockingIOError:
                 previous = None
             except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:

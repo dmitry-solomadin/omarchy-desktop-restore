@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -127,6 +128,38 @@ class OpenCodeTests(unittest.TestCase):
                                                'XDG_DATA_HOME=/custom/data'])
             self.assertNotEqual(app.identity(saved), app.identity({**saved, 'agent_env': {}}))
         self.assertIn('error', self.capture(fast=True))
+
+    def test_v2_custom_environment_is_used_for_queries_cache_and_matching(self):
+        self.procs[12]['cmd'] = ['opencode2']
+        env = {'XDG_DATA_HOME': '/different-opencode-data'}
+        with patch.object(agents, 'process_env', return_value=env), \
+             patch.object(app, 'sessions', return_value=self.v2) as query:
+            saved = self.capture()
+            query.assert_called_once_with(env)
+            self.assertEqual(self.capture(fast=True)['session'], 'ses_exact_v2')
+        self.assertIn('error', self.capture(fast=True))
+        self.assertNotEqual(app.identity(saved), app.identity({**saved, 'agent_env': {}}))
+        self.assertFalse((self.state / 'sessions-cache.json').exists())
+        with patch.object(app, 'run', return_value='{"data":[],"cursor":{}}') as run:
+            app.sessions(env)
+        self.assertEqual(run.call_args.args[0][:3], ['env', 'XDG_DATA_HOME=/different-opencode-data', 'opencode2'])
+
+    def test_default_v2_environment_matches_older_checkpoints_and_cache(self):
+        self.procs[12]['cmd'] = ['opencode2']
+        env = {'XDG_DATA_HOME': os.environ.get('XDG_DATA_HOME', str(app.HOME / '.local/share'))}
+        app.write_json(self.state / 'sessions-cache.json', self.v2)
+        with patch.object(agents, 'process_env', return_value=env):
+            saved = self.capture(fast=True)
+        self.assertEqual(saved['session'], 'ses_exact_v2')
+        self.assertEqual(app.identity(saved), app.identity({**saved, 'agent_env': {}}))
+
+    def test_malformed_metadata_is_a_skipped_window_not_a_watcher_failure(self):
+        self.procs[12]['cmd'] = ['opencode2']
+        for malformed in ({'data': []}, [{'title': None}], ['invalid']):
+            app.write_json(self.state / 'sessions-cache.json', malformed)
+            saved = self.capture(fast=True)
+            self.assertEqual(saved['kind'], 'agent-unresolved')
+            self.assertIn('Invalid OpenCode', saved['error'])
 
     def test_background_jobs_private_ptys_and_attach_are_not_resumed(self):
         for change in ({'pgrp': 99}, {'tty': 2}, {'cmd': ['opencode', '--log-level', 'INFO', 'run', 'prompt']},
