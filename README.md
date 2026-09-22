@@ -63,31 +63,22 @@ native session recovery and require the relevant herdr integrations.
 
 ## Saving and reboot coverage
 
-The watcher checks every 10 seconds and saves after 20 seconds of stable window
-state. Empty desktops do not overwrite checkpoints. On login, the previous
-session's checkpoint is kept as the restore target, separate from new autosaves.
+The desktop is checked every 10 seconds and saved after 20 seconds without changes.
+Empty desktops never overwrite a checkpoint. After login, new autosaves keep the
+previous session's restore target intact.
 
-The power-menu save runs **before windows close**, uses cached agent metadata,
-and stops after **700 ms**. A failed save never blocks the power action.
+Setup integrates saving into the Omarchy system menu's Reboot and Shutdown actions.
+It preserves custom entries and falls back to the original commands if the plugin
+wrapper is missing.
 
-| Reboot/shutdown path | Coverage |
+| Reboot/shutdown path | What gets saved |
 | --- | --- |
-| Omarchy system menu, including Super+Escape or the power key | Bounded save attempt before windows close |
-| Plugin's `bin/power-action reboot` or `shutdown` | Same bounded save |
-| `omarchy reboot`, `omarchy system reboot`, shutdown equivalents, update prompts, direct `systemctl` commands | Best-effort late save; rolling checkpoint fallback |
-| Forced reboot, crash or power loss | Previously saved checkpoint only |
+| System menu (Super+Escape or power key), or the plugin's power wrapper | A save is attempted **before windows close**, using cached agent metadata, with a **700 ms cutoff**. Failure never blocks reboot or shutdown. |
+| CLI commands, update prompts or direct `systemctl` calls | Best-effort late save, with the last autosave as fallback |
+| Forced reboot, crash or power loss | Existing checkpoint only |
 
-Omarchy currently has no shared pre-shutdown hook, so a fresh save is not guaranteed
-for every reboot path. Use the system menu for the most reliable result.
-
-### Power-menu integration
-
-Setup adds managed Reboot/Shutdown entries to
-`~/.config/omarchy/extensions/omarchy-menu.jsonc`, preserving their labels and icons.
-If the plugin wrapper is missing, they fall back to Omarchy's original commands.
-
-Existing custom power entries are not overwritten. To integrate your own action,
-run `desktop-restore save-shutdown` immediately before it.
+**Use the system menu for the most reliable save.** Omarchy has no shared
+pre-shutdown hook covering every reboot path.
 
 ## Limits
 
