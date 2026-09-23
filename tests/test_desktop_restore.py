@@ -66,10 +66,11 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(app.read_json(app.STATE / 'shutdown.json'), fresh)
 
     def test_watcher_pauses_during_shutdown_and_resumes_if_cancelled(self):
-        with patch.object(app, 'preparing_for_shutdown', side_effect=[True, False]), \
+        with patch.object(app, 'checkpoint_paused', side_effect=[True, False, False]), \
              patch.object(app, 'capture', return_value={'windows': []}) as capture, \
-             patch.object(app.time, 'sleep', side_effect=[None, InterruptedError('end test')]), \
+             patch.object(app, 'WindowEvents') as events, \
              patch.object(app, 'save') as save:
+            events.return_value.__enter__.return_value.wait.side_effect = [False, InterruptedError('end test')]
             with self.assertRaises(InterruptedError):
                 app.watch()
         capture.assert_called_once()
@@ -135,7 +136,9 @@ class CheckpointTests(unittest.TestCase):
         with patch.object(sys, 'argv', ['desktop-restore', 'restore']), \
              patch.object(app.os, 'umask'), patch.object(app, 'restore', return_value=True) as restore:
             self.assertEqual(app.main(), 0)
-        restore.assert_called_once_with(snapshot)
+        restore.assert_called_once()
+        self.assertEqual(restore.call_args.args, (snapshot,))
+        self.assertTrue(callable(restore.call_args.kwargs['on_event']))
 
     def test_internal_shutdown_command_remains_silent_and_fail_open(self):
         with patch.object(sys, 'argv', ['desktop-restore', 'save-shutdown', '--if-shutting-down']), \

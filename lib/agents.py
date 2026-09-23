@@ -13,6 +13,16 @@ SESSION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{7,127}\Z')
 BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
 
+class SharedWindowAmbiguity(ValueError):
+    """The terminal is known, but its window-to-shell association is not."""
+
+
+class AgentIdentityError(ValueError):
+    def __init__(self, kind, message):
+        super().__init__(message)
+        self.kind = kind
+
+
 def read_process(pid, root=Path('/proc')):
     path = root / str(pid)
     stat = (path / 'stat').read_text().rsplit(')', 1)[1].split()
@@ -201,10 +211,14 @@ def codex_mode(args):
         '-i', '--image', '--local-provider', '--add-dir', '--remote', '--remote-auth-token-env'})
 
 
+def terminal_roots(pid, procs):
+    return {child: proc for child, proc in procs.items()
+            if proc['parent'] == pid and proc.get('tty')}
+
+
 def terminal_branch(window, procs, siblings):
     """Match windows to terminal child branches, not to the shared GUI PID."""
-    roots = {pid: proc for pid, proc in procs.items()
-             if proc['parent'] == window['pid'] and proc.get('tty')}
+    roots = terminal_roots(window['pid'], procs)
     windows = list(siblings)
     assignments = {}
     choices = {}
@@ -228,7 +242,7 @@ def terminal_branch(window, procs, siblings):
             if index in assignments:
                 return assignments[index]
             break
-    raise ValueError('Cannot map agent to a shared-process terminal window; use an independent terminal process')
+    raise SharedWindowAmbiguity('Cannot map agent to a shared-process terminal window')
 
 
 def opencode_mode(args):
@@ -237,10 +251,9 @@ def opencode_mode(args):
         '--hostname', '--log-level', '--password', '--username', '--server'})
 
 
-def terminal_agent(window, procs, state, shared=False, siblings=None):
+def terminal_agent(window, procs, state, shared=False, siblings=None, root=None):
     candidates = []
-    roots = {pid: proc for pid, proc in procs.items()
-             if proc['parent'] == window['pid'] and proc.get('tty')}
+    roots = terminal_roots(window['pid'], procs)
     terminal_ttys = {proc['tty'] for proc in roots.values()}
     for pid in descendants(window['pid'], procs):
         proc = procs[pid]
@@ -268,8 +281,11 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
         candidates.append((pid, kind, args))
     if not candidates:
         return None
-    if shared or len(roots) > 1:
-        root = terminal_branch(window, procs, siblings or [window])
+    if root is not None or shared or len(roots) > 1:
+        if root is None:
+            root = terminal_branch(window, procs, siblings or [window])
+        if root not in roots:
+            raise ValueError('Terminal shell is no longer present')
         branch = descendants(root, procs) | {root}
         candidates = [c for c in candidates if c[0] in branch]
         if not candidates:
@@ -285,6 +301,13 @@ def terminal_agent(window, procs, state, shared=False, siblings=None):
     if len(candidates) != 1:
         raise ValueError('Multiple interactive agents in this terminal; cannot identify the visible session')
     pid, kind, args = candidates[0]
+    try:
+        return agent_session(pid, kind, args, procs, state)
+    except ValueError as error:
+        raise AgentIdentityError(kind, str(error)) from error
+
+
+def agent_session(pid, kind, args, procs, state):
     proc = procs[pid]
     env = process_env(pid)
     if kind in OPENCODE.values():

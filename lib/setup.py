@@ -273,6 +273,19 @@ UMask=0077
         """Upgrade existing receipts without removing/recreating user integration."""
         receipt = json.loads(self.receipt.read_text())
         changes = []
+        binding = next((item for item in receipt['files'] if item['path'] == str(self.bindings)), None)
+        block = self.shortcut_block()
+        bindings_changed = binding is not None and binding.get('block') != block
+        if bindings_changed:
+            old = binding.get('block')
+            current = self.bindings.read_text()
+            if self.bindings.is_symlink() or not old or current.count(old) != 1:
+                raise RuntimeError(f'Managed shortcut was edited in {self.bindings}; preserve it before updating.')
+            current = current.replace(old, block, 1)
+            # Keep the original managed baseline separate from later user edits,
+            # so uninstall removes our block rather than reverting those edits.
+            binding.update(block=block, after=binding['after'].replace(old, block, 1))
+            changes.append((self.bindings, current, binding['mode']))
         for path, text, mode in [self.watcher_file(), *self.lifecycle_files()]:
             entry = next((item for item in receipt['files'] if item['path'] == str(path)), None)
             if path.is_symlink() or (path.exists() and (entry is None or path.read_text() != entry['after'])):
@@ -299,6 +312,11 @@ UMask=0077
         receipt['revision'] = self.revision()
         changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
         with file_transaction(changes):
+            if bindings_changed:
+                run(['hyprctl', 'reload'])
+                errors = run(['hyprctl', 'configerrors'])
+                if errors:
+                    raise RuntimeError(errors)
             run(['systemctl', '--user', 'daemon-reload'])
             run(['systemctl', '--user', 'restart', UNIT, LIFECYCLE_UNIT])
 
@@ -351,10 +369,7 @@ UMask=0077
                 entries[-1]['agent_hooks'] = hooks
 
         bindings = self.bindings.read_text() if self.bindings.exists() else ''
-        block = '\n-- >>> ' + PLUGIN_ID + '\n'
-        command = shlex.join([str(helper), 'restore'])
-        block += 'o.bind("SUPER + SHIFT + R", "Restore saved desktop windows", ' + json.dumps(command, ensure_ascii=False) + ')\n'
-        block += '-- <<< ' + PLUGIN_ID + '\n'
+        block = self.shortcut_block()
         add(self.bindings, bindings + block, block=block)
         menu, block = menu_block(self.menu.read_text() if self.menu.exists() else '{}\n', self.root / 'bin/power-action')
         add(self.menu, menu, block=block)
@@ -365,6 +380,14 @@ UMask=0077
         for path, text, hooks in self.agent_hook_files():
             add(path, text, hooks=hooks)
         return entries
+
+    def shortcut_block(self):
+        command = shlex.join([str(self.root / 'bin/desktop-restore'), 'restore', '--source', 'shortcut'])
+        return ('\n-- >>> ' + PLUGIN_ID + '\n'
+                'hl.unbind("SUPER + SHIFT + R")\n'
+                'o.bind("SUPER + SHIFT + R", "Restore saved desktop windows", '
+                + json.dumps(command, ensure_ascii=False) + ')\n'
+                '-- <<< ' + PLUGIN_ID + '\n')
 
     def start(self):
         # A component that is unloading after plugin removal must not reinstall.

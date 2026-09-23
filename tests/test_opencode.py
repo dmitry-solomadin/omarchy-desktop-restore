@@ -71,6 +71,14 @@ class OpenCodeTests(unittest.TestCase):
         self.assertEqual(saved['kind'], 'agent-unresolved')
         self.assertNotIn('launch', saved)
 
+    def test_untitled_v2_session_does_not_block_other_conversations(self):
+        self.procs[12]['cmd'] = ['opencode2']
+        untitled = {'id': 'ses_untitled', 'location': {'directory': self.temp.name}}
+        with patch.object(app, 'sessions', return_value=[untitled, *self.v2]):
+            self.assertEqual(self.capture()['session'], 'ses_exact_v2')
+        self.assertEqual(app.read_json(self.state / 'sessions-cache.json'), self.v2)
+        self.assertEqual(self.capture(fast=True)['session'], 'ses_exact_v2')
+
     def test_cli_metadata_is_normalized_and_version_checked(self):
         raw = [{'id': 'ses_exact_v1', 'title': 'Same title', 'directory': self.temp.name,
                 'updated': 123, 'projectId': 'project'}]

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Desktop checkpoints for Omarchy/Hyprland 0.55+ (Python standard library)."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import configparser
 import contextlib
 import fcntl
@@ -13,10 +14,16 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
-from agents import read_process, terminal_agent, valid_session, options
+from agents import read_process, terminal_agent, valid_session, options, SharedWindowAmbiguity
+from shared_agents import capture_group, deduplicate_groups, restore_entries
 from terminals import TERMINALS, terminal_launch
+from window_events import WindowEvents
+from tiling import TiledOrder
+import restore_log
+import recovery
 
 HOME = Path.home()
 STATE = Path(os.environ.get('XDG_STATE_HOME', HOME / '.local/state')) / 'desktop-restore'
@@ -25,6 +32,8 @@ BROWSERS = {
     'google-chrome': 'google-chrome-stable', 'chromium': 'chromium',
     'brave-browser': 'brave', 'firefox': 'firefox', 'zen': 'zen-browser',
 }
+# Host executables identify the runtime, not an individual plugin's launcher.
+SHELL_HOSTS = {'quickshell', 'qs', 'omarchy-shell'}
 
 
 def run(args, timeout=10, **kwargs):
@@ -97,15 +106,52 @@ def initialize():
     with lock('state'):
         meta = read_json(STATE / 'instance.json', {})
         if meta.get('instance') == instance():
+            if 'recovery_started' not in meta:
+                # Upgrade an existing login without replaying its frozen target.
+                progress = read_json(STATE / 'restored-windows.json', {})
+                meta['recovery_started'] = (progress.get('instance') == instance()
+                                            and bool(progress.get('windows')))
+                write_json(STATE / 'instance.json', meta)
             return
         latest = read_json(STATE / 'latest.json')
         shutdown = read_json(STATE / 'shutdown.json')
         if (shutdown and shutdown.get('instance') == meta.get('instance')
                 and (not latest or shutdown.get('saved', 0) >= latest.get('saved', 0))):
             latest = shutdown
-        if latest and latest['windows']:
+        protected = read_json(STATE / 'restore.json')
+        expired_at_shutdown = (shutdown and shutdown.get('instance') == meta.get('instance')
+                               and shutdown.get('recovery_grace_expired'))
+        if (meta.get('recovery_policy') == recovery.POLICY and not meta.get('recovery_started')
+                and protected is not None and protected.get('instance') != meta.get('instance')
+                and not expired_at_shutdown):
+            # Rebooting without beginning a new desktop must not replace the
+            # protected target with idle-login/autostart windows.
+            latest = protected
+        if latest is not None:
             write_json(STATE / 'restore.json', latest)
-        write_json(STATE / 'instance.json', {'instance': instance()})
+        write_json(STATE / 'instance.json', {'instance': instance(), 'recovery_started': False,
+                                           'recovery_policy': recovery.POLICY})
+
+
+def observe_recovery_windows(clients):
+    with lock('state'):
+        meta = read_json(STATE / 'instance.json', {})
+        if meta.get('instance') != instance() or meta.get('recovery_started'):
+            return
+        previous = json.dumps(meta, sort_keys=True)
+        progress = read_json(STATE / 'restored-windows.json', {})
+        restored = progress.get('windows', {}).values() if progress.get('instance') == instance() else ()
+        trigger = recovery.observe(meta, clients, restored)
+        if previous != json.dumps(meta, sort_keys=True):
+            write_json(STATE / 'instance.json', meta)
+        if trigger:
+            restore_log.record(STATE, 'recovery-' + instance(), 'recovery_timer_started',
+                               trigger=trigger, seconds=recovery.GRACE_SECONDS,
+                               deadline_boot_seconds=meta['recovery_deadline'])
+
+
+def recovery_due(meta):
+    return meta.get('instance') == instance() and recovery.due(meta)
 
 
 def processes():
@@ -153,14 +199,35 @@ def sessions(env=None):
     raise RuntimeError('Too many OpenCode sessions to identify windows reliably')
 
 
-def session_for_title(title, available):
+def title_sessions(title, available):
     if not isinstance(available, list) or any(
             not isinstance(s, dict) or not isinstance(s.get('title'), str) for s in available):
         raise ValueError('Invalid OpenCode session metadata')
     label = title.split('OC | ', 1)[1].strip()
     truncated = label.endswith('…')
     prefix = label[:-1] if truncated else label
-    matches = [s for s in available if (s['title'].startswith(prefix) if truncated else s['title'] == label)]
+    return [s for s in available if (s['title'].startswith(prefix) if truncated else s['title'] == label)]
+
+
+def session_metadata(available):
+    """Cache only identity fields; V2 permits sessions without a title."""
+    if not isinstance(available, list):
+        raise ValueError('Invalid OpenCode session metadata')
+    result = []
+    for session in available:
+        if (not isinstance(session, dict) or not isinstance(session.get('location'), dict)
+                or not valid_session(session.get('id'), session['location'].get('directory'))
+                or ('title' in session and not isinstance(session['title'], str))):
+            raise ValueError('Invalid OpenCode session metadata')
+        # An unnamed session cannot match an OC | conversation title. It must
+        # not make unrelated, named conversations impossible to capture.
+        if 'title' in session:
+            result.append({key: session[key] for key in ('id', 'title', 'location')})
+    return result
+
+
+def session_for_title(title, available):
+    matches = title_sessions(title, available)
     if len(matches) != 1:
         raise ValueError(f'OpenCode title matches {len(matches)} sessions; keep conversation titles unique')
     return matches[0]
@@ -218,28 +285,123 @@ def opencode_window(title, agent, available):
     return {**result, 'argv': with_env(argv, env), 'agent_env': env}
 
 
+def shared_opencode(agents, windows, available_sessions):
+    """Resolve visible titles only when all plausible client settings agree."""
+    resolved, errors, choices = [], [], []
+    for window in windows:
+        if 'OC | ' not in window['title']:
+            continue
+        possible, owners = {}, set()
+        try:
+            for index, agent in enumerate(agents):
+                # A failed context lookup cannot be interpreted as no match.
+                available = available_sessions(agent)
+                matches = title_sessions(window['title'], available)
+                if not matches:
+                    continue
+                session = opencode_window(window['title'], agent, available)
+                key = json.dumps([identity(session), session['argv'], session['cwd']], sort_keys=True)
+                possible[key] = {**session, 'title': window['title']}
+                owners.add(index)
+            if len(possible) != 1:
+                raise ValueError('OpenCode session/context or launch options are ambiguous' if possible
+                                 else 'No matching OpenCode session in the local client contexts')
+            resolved.append(next(iter(possible.values())))
+            choices.append(owners)
+        except (ValueError, KeyError) as error:
+            errors.append(f"{window['title']}: {error}")
+    # A single client cannot justify several different visible conversations.
+    # Check a one-to-one assignment exists without pretending to know which
+    # assignment is real when clients have identical supported launch settings.
+    assigned = {}
+
+    def assign(window, visited):
+        for owner in sorted(choices[window]):
+            if owner in visited:
+                continue
+            visited.add(owner)
+            if owner not in assigned or assign(assigned[owner], visited):
+                assigned[owner] = window
+                return True
+        return False
+
+    if any(not assign(window, set()) for window in range(len(choices))):
+        return [], errors + ['OpenCode titles cannot be assigned to distinct local clients']
+    if len(assigned) < len(agents):
+        errors.append(f'{len(agents) - len(assigned)} OpenCode clients lack an identifiable visible conversation; '
+                      'keep conversation titles unique')
+    return resolved, errors
+
+
 def desktop_apps():
-    apps = {}
+    ids, classes, executables = {}, {}, {}
+    seen = set()
+
+    def index(table, key, path):
+        if key:
+            table.setdefault(key.lower(), set()).add(str(path))
     roots = [Path(os.environ.get('XDG_DATA_HOME', HOME / '.local/share'))]
     roots += [Path(p) for p in os.environ.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share').split(':')]
     for root in roots:
         for path in sorted((root / 'applications').glob('*.desktop')):
+            # A user override, including Hidden=true, masks the system entry.
+            if path.name in seen:
+                continue
+            seen.add(path.name)
             config = configparser.ConfigParser(interpolation=None, strict=False)
             try:
                 config.read(path)
                 entry = config['Desktop Entry']
-                if entry.get('Hidden') == 'true' or entry.get('Terminal') == 'true':
+                if (entry.get('Type') != 'Application' or entry.get('Hidden') == 'true'
+                        or entry.get('Terminal') == 'true'):
                     continue
                 command = shlex.split(entry.get('Exec', ''))
-                keys = [path.stem, entry.get('StartupWMClass', '')]
-                if command:
-                    keys.append(Path(command[0]).name)
-                for key in keys:
-                    if key:
-                        apps.setdefault(key.lower(), str(path))
+                if not command and entry.get('DBusActivatable') != 'true':
+                    continue  # Icon/identity-only entries cannot launch a window.
+                index(ids, path.stem, path)
+                index(classes, entry.get('StartupWMClass', ''), path)
+                if command and Path(command[0]).name not in SHELL_HOSTS:
+                    index(executables, Path(command[0]).name, path)
             except (configparser.Error, ValueError, KeyError):
                 continue
+    # Explicit desktop IDs outrank declared WM classes, then executable aliases.
+    # Retain ambiguous aliases as None so lookup cannot fall through and guess.
+    apps = {}
+    for table in (executables, classes, ids):
+        apps.update({key: next(iter(paths)) if len(paths) == 1 else None for key, paths in table.items()})
     return apps
+
+
+def app_launcher(window, executable, apps):
+    """Match standard application identity, never window titles or plugin names."""
+    window_class = window['class'].lower()
+    if window_class == 'org.quickshell':
+        raise ValueError('Shared Quickshell window lacks a per-application ID; cannot identify its launcher')
+    keys = [window_class]
+    if executable not in SHELL_HOSTS:
+        keys.append(executable.lower())
+    for key in keys:
+        if key not in apps:
+            continue
+        desktop = apps[key]
+        if desktop is None:
+            raise ValueError(f'Multiple desktop launchers match {key}; cannot identify this application')
+        return {'desktop_id': Path(desktop).stem, 'launch': ['gio', 'launch', desktop]}
+    raise ValueError('No desktop launcher found for this application')
+
+
+def resolve_saved_app(saved, apps):
+    """Revalidate legacy shared-host entries without retaining hardcoded guesses."""
+    saved = dict(saved)
+    saved.pop('desktop_id', None)
+    saved.pop('match_title', None)
+    try:
+        saved.update(app_launcher(saved, 'quickshell', apps))
+        saved.pop('error', None)
+    except ValueError as error:
+        saved.pop('launch', None)
+        saved['error'] = str(error)
+    return saved
 
 
 def browser_flags(argv):
@@ -255,8 +417,10 @@ def browser_flags(argv):
     return result
 
 
-def capture(fast=False):
+def capture(fast=False, track_recovery=False):
     clients = hypr('clients')
+    if track_recovery:
+        observe_recovery_windows(clients)
     procs = processes()
     apps = desktop_apps()
     session_cache = {}
@@ -272,11 +436,14 @@ def capture(fast=False):
         if filename not in session_cache:
             try:
                 if fast:
-                    data = read_json(STATE / filename, [])
+                    data = read_json(STATE / filename)
+                    if data is None:
+                        raise ValueError('OpenCode session metadata is not cached for this client context')
+                    data = session_metadata(data)
                 else:
                     data = (sessions_v1(agent['cwd'], agent['agent_env']) if agent['kind'] == 'opencode1'
                             else sessions(agent['agent_env']))
-                    data = [{key: s[key] for key in ('id', 'title', 'location')} for s in data]
+                    data = session_metadata(data)
                     write_json(STATE / filename, data)
                 session_cache[filename] = data
             except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError, KeyError) as error:
@@ -287,6 +454,7 @@ def capture(fast=False):
         return data
     monitors = {m['id']: m['name'] for m in hypr('monitors')}
     windows = []
+    ambiguous = set()
     for c in sorted(clients, key=lambda c: (c['workspace']['id'], c['at'][0], c['at'][1])):
         if not c.get('mapped') or not c.get('class'):
             continue
@@ -306,6 +474,10 @@ def capture(fast=False):
                     agent = terminal_agent(c, procs, STATE / 'agents',
                                            shared=sum(other['pid'] == c['pid'] for other in clients) > 1,
                                            siblings=[other for other in clients if other['pid'] == c['pid']])
+                except SharedWindowAmbiguity:
+                    ambiguous.add(c['address'])
+                    w['kind'] = 'agent-unresolved'
+                    raise
                 except ValueError:
                     w['kind'] = 'agent-unresolved'
                     raise
@@ -334,29 +506,77 @@ def capture(fast=False):
                 w['launch'] += ['--restore-last-session']
                 w['browser_group'] = json.dumps([c['class'], flags])
             else:
-                desktop = apps.get(c['class'].lower()) or apps.get(executable.lower())
-                if not desktop:
-                    raise ValueError('No desktop launcher found for this application')
-                w['launch'] = ['gio', 'launch', desktop]
+                w.update(app_launcher(c, executable, apps))
         except (ValueError, KeyError) as error:
             w['error'] = str(error)
         windows.append(w)
-    return {'version': 1, 'instance': instance(), 'saved': time.time(), 'windows': windows}
+    groups = []
+    for pid in sorted({w['pid'] for w in windows if w['address'] in ambiguous}):
+        siblings = [c for c in clients if c['pid'] == pid]
+        slots = [w for w in windows if w['pid'] == pid and w['address'] in ambiguous]
+        group = capture_group(siblings, slots, procs, STATE / 'agents', windows, identity,
+                              lambda agents, slots: shared_opencode(agents, slots, available_sessions))
+        if group is not None:
+            groups.append(group)
+            for slot in slots:
+                slot['agent_group'] = group['key']
+    deduplicate_groups(groups, identity)
+    snapshot = {'version': 1, 'instance': instance(), 'saved': time.time(), 'windows': windows}
+    if groups:
+        snapshot['agent_groups'] = groups
+    return snapshot
 
 
-def save(snapshot):
-    if not snapshot['windows']:
-        return
+def save(snapshot, closed=False):
     with lock('state'):
+        meta = read_json(STATE / 'instance.json', {})
+        expired = recovery_due(meta)
+        if expired:
+            meta.update(recovery_started=True, recovery_synced=True, recovery_reason='grace_expired')
+        active = meta.get('instance') == instance() and meta.get('recovery_started', False)
+        if not snapshot['windows'] and not ((closed or expired) and active):
+            return
+        if active:
+            # Once recovery has been attempted, the restore target follows the
+            # desktop. Keep only unsuccessful recovery entries as retry work.
+            target = {**snapshot, 'windows': list(snapshot['windows'])}
+            previous = read_json(STATE / 'restore.json', {'windows': []})
+            progress = read_json(STATE / 'restored-windows.json', {})
+            completed = progress.get('windows', {}) if progress.get('instance') == instance() else {}
+            live = restore_entries(snapshot)
+            for entry in ([] if expired else restore_entries(previous)):
+                if meta.get('recovery_synced') and not entry.get('pending_restore'):
+                    continue
+                if entry['key'] in completed or existing_window(entry, live, set()):
+                    continue
+                pending = {**entry, 'pending_restore': True}
+                pending.pop('agent_group', None)  # A standalone retry entry, not a real group slot.
+                target['windows'].append(pending)
+            snapshot = target
+            write_json(STATE / 'restore.json', snapshot)
+            meta['recovery_synced'] = True
+            write_json(STATE / 'instance.json', meta)
         write_json(STATE / 'latest.json', snapshot)
         if not (STATE / 'restore.json').exists():
             write_json(STATE / 'restore.json', snapshot)
+        if expired:
+            restore_log.record(STATE, 'recovery-' + instance(), 'recovery_timer_expired',
+                               trigger=meta.get('recovery_trigger'), checkpoint_saved=snapshot.get('saved'))
 
 
 def preparing_for_shutdown():
     return run(['busctl', '--system', 'get-property', 'org.freedesktop.login1',
                 '/org/freedesktop/login1', 'org.freedesktop.login1.Manager',
                 'PreparingForShutdown'], timeout=0.15) == 'b true'
+
+
+def checkpoint_paused():
+    if preparing_for_shutdown():
+        return True
+    final = read_json(STATE / 'shutdown.json', {})
+    # The power menu saves before it starts closing windows, which can precede
+    # logind's shutdown flag. Preserve that full snapshot through teardown.
+    return final.get('instance') == instance() and 0 <= time.time() - final.get('saved', 0) < 30
 
 
 def save_shutdown(if_shutting_down=False):
@@ -374,8 +594,13 @@ def save_shutdown(if_shutting_down=False):
         snapshot = capture(fast=True)
         if not snapshot['windows']:
             return
-        if any(('OC | ' in w['title'] or w.get('kind') == 'agent-unresolved') and w.get('error') for w in snapshot['windows']):
+        if any(('OC | ' in w['title'] or w.get('kind') == 'agent-unresolved') and w.get('error')
+               and not w.get('agent_group') for w in snapshot['windows']):
             return  # retain the previous checkpoint rather than losing conversations
+        if any(group['errors'] for group in snapshot.get('agent_groups', [])):
+            return  # Placement uncertainty is fine; unknown session identities are not.
+        if recovery_due(read_json(STATE / 'instance.json', {})):
+            snapshot['recovery_grace_expired'] = True
         write_json(STATE / 'shutdown.json', snapshot)
 
 
@@ -389,6 +614,8 @@ def identity(w):
         return ('opencode', w.get('session'), tuple(sorted(opencode_context(w.get('agent_env', {})).items())))
     if w['kind'] in ('terminal', 'opencode-home'):
         return (w['kind'], w['class'], w.get('cwd'))
+    if w['kind'] == 'app' and w['class'].lower() == 'org.quickshell':
+        return ('app', w['class'], w['title'])
     return (w['kind'], w['class'])
 
 
@@ -488,84 +715,160 @@ def wait_for_window(saved, before, claimed, browser_launched):
     raise RuntimeError('No matching window appeared within 15 seconds')
 
 
-def restore(snapshot):
-    live = capture()['windows']
-    claimed, launched_browsers, errors = set(), {}, []
+def restore(snapshot, on_event=None):
+    def event(name, saved, **fields):
+        if on_event:
+            on_event(name, key=saved['key'], kind=saved['kind'], window_class=saved['class'],
+                     workspace=saved['workspace'], **fields)
+
+    live = restore_entries(capture())
+    claimed, errors = set(), []
+    warnings = []
+    for group in snapshot.get('agent_groups', []):
+        errors.extend(f"Shared terminal {group['key']}: {error}" for error in group['errors'])
+        if group['sessions']:
+            warnings.append(f"Shared terminal {group['key']}: {len(group['sessions'])} exact sessions preserved; "
+                            'window placement is approximate')
     same = snapshot['instance'] == instance()
-    restored = already = 0
+    restored = already = completed = 0
     mapping_path = STATE / 'restored-windows.json'
     mapping = read_json(mapping_path, {})
     if mapping.get('instance') != instance():
         mapping = {'instance': instance(), 'windows': {}}
-    try:
-        for saved in snapshot['windows']:
+    lanes = {}
+    apps = None
+    for saved in restore_entries(snapshot):
+        if saved['kind'] == 'app' and saved['class'].lower() == 'org.quickshell':
+            if apps is None:
+                apps = desktop_apps()
+            saved = resolve_saved_app(saved, apps)
+        lanes.setdefault(saved['class'], []).append(saved)
+    progress_lock = threading.Lock()
+    tile_order = TiledOrder([saved for lane in lanes.values() for saved in lane], live, hypr, run, lua)
+
+    def restore_class(windows):
+        nonlocal restored, already, completed
+        # Window discovery and temporary rules are class-based. Keep launches
+        # within each class ordered, including a browser's multi-window recovery.
+        launched_browsers = {}
+        for saved in windows:
             label = f"Workspace {saved['workspace']}: {saved['title']}"
-            remembered = mapping['windows'].get(saved['key'], {})
-            actual = next((w for w in live if w['address'] == remembered.get('address')
-                           and w['pid'] == remembered.get('pid') and w['address'] not in claimed), None)
-            actual = actual or existing_window(saved, live, claimed, same)
-            if actual:
-                claimed.add(actual['address'])
-                # Do not move a window the user has already reopened or rearranged.
-                already += 1
-                continue
-            if saved.get('error'):
-                errors.append(label + ': ' + saved['error'])
-                continue
+            with progress_lock:
+                remembered = mapping['windows'].get(saved['key'], {})
+                actual = next((w for w in live if w['address'] == remembered.get('address')
+                               and w['pid'] == remembered.get('pid') and w['address'] not in claimed), None)
+                actual = actual or existing_window(saved, live, claimed, same)
+                if actual:
+                    claimed.add(actual['address'])
+                    mapping['windows'][saved['key']] = {k: actual[k] for k in ('address', 'pid')}
+                    write_json(mapping_path, mapping)
+                    # Do not move a window the user has already reopened or rearranged.
+                    already += 1
+                    event('already_open', saved)
+                    continue
+                if remembered:
+                    # A completed recovery is not undone by later closing its window.
+                    completed += 1
+                    event('already_completed', saved)
+                    continue
+                if saved.get('error'):
+                    errors.append(label + ': ' + saved['error'])
+                    event('window_failed', saved, error=saved['error'])
+                    continue
+                browser_open = saved.get('browser_group') and any(
+                    w.get('browser_group') == saved['browser_group'] for w in live)
+                taken = set(claimed)
             try:
                 before = {w['address'] for w in hypr('clients')}
                 group = saved.get('browser_group')
                 if not group or group not in launched_browsers:
-                    if group and any(w.get('browser_group') == group for w in live):
+                    if browser_open:
                         raise RuntimeError('Browser is already open; restore its missing windows from History')
+                    event('launch_requested', saved)
                     launch(saved)
                     if group:
                         launched_browsers[group] = before
                 before = launched_browsers.get(group, before)
-                actual, moved = wait_for_window(saved, before, claimed, group in launched_browsers)
-                claimed.add(actual['address'])
-                # Remember the launch before optional placement. A compositor
-                # error must not make the next restore launch the window again.
-                mapping['windows'][saved['key']] = {k: actual[k] for k in ('address', 'pid')}
-                write_json(mapping_path, mapping)
-                restored += 1
-                # Keep metadata for matching the rest of this restore without another API call.
-                live.append({**saved, 'address': actual['address'], 'pid': actual['pid']})
+                actual, moved = wait_for_window(saved, before, taken, group in launched_browsers)
+                with progress_lock:
+                    claimed.add(actual['address'])
+                    # Remember the launch before optional placement. Serialize
+                    # progress writes so simultaneous arrivals cannot lose records
+                    # or race over write_json's per-process temporary file.
+                    mapping['windows'][saved['key']] = {k: actual[k] for k in ('address', 'pid')}
+                    write_json(mapping_path, mapping)
+                    restored += 1
+                    # Match later entries without another session API call.
+                    live.append({**saved, 'address': actual['address'], 'pid': actual['pid']})
+                event('window_restored', saved, address=actual['address'], window_pid=actual['pid'])
                 if not moved:
                     place(saved, actual)
+                with progress_lock:
+                    ordered = tile_order.placed(saved, actual, moved)
+                    if ordered:
+                        event('tiled_order_' + ordered['status'], saved,
+                              **{key: value for key, value in ordered.items() if key != 'status'})
                 print('RESTORED ' + label, flush=True)
             except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
-                errors.append(label + ': ' + str(error))
+                with progress_lock:
+                    errors.append(label + ': ' + str(error))
+                event('window_failed', saved, error=str(error))
+
+    try:
+        # A slow or failed application only holds up its own window class.
+        # Bound parallel startup work while allowing independent apps to recover.
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(lanes)))) as pool:
+            for _ in pool.map(restore_class, lanes.values()):
+                pass
     finally:
         # Persist partial progress even if restoration is interrupted. Never
         # refocus the starting window: the user may have selected a restored one.
         # Initial focus protection belongs to the pre-map launch rules instead.
-        write_json(STATE / 'last-result.json', {'restored': restored, 'already_open': already, 'errors': errors})
-    report(f'Reopened {restored}; already open {already}; skipped/failed {len(errors)}.')
+        result = {'restored': restored, 'already_open': already, 'errors': errors}
+        if completed:
+            result['already_completed'] = completed
+        if warnings:
+            result['warnings'] = warnings
+        write_json(STATE / 'last-result.json', result)
+    report(f'Reopened {restored}; already open {already}; previously recovered {completed}; skipped/failed {len(errors)}.')
     for error in errors:
         print(error, file=sys.stderr)
+    for warning in warnings:
+        print(warning, file=sys.stderr)
     return not errors
 
 
 def signature(snapshot):
     # Ignore frequently-changing browser titles; track terminal directories and sessions.
-    return [(w['address'], w['workspace'], w['at'], w['size'], w['floating'], w['fullscreen'],
-             w.get('session'), w.get('cwd'), w.get('error')) for w in snapshot['windows']]
+    windows = [(w['address'], w['workspace'], w['at'], w['size'], w['floating'], w['fullscreen'],
+                w.get('session'), w.get('cwd'), w.get('error')) for w in snapshot['windows']]
+    if snapshot.get('agent_groups'):
+        windows.append(json.dumps(snapshot['agent_groups'], sort_keys=True))
+    return windows
 
 
 def watch():
-    """Debounce closing windows so Omarchy's 2-second shutdown preserves a full snapshot."""
-    with lock('watch', blocking=False):
+    """Save close events promptly; debounce other changes and exclude shutdown teardown."""
+    with lock('watch', blocking=False), WindowEvents() as events:
         previous, changed = None, time.monotonic()
+        closed = False
         while True:
             try:
-                if preparing_for_shutdown():
+                if checkpoint_paused():
                     previous = None  # Never autosave a partially torn-down desktop.
+                    closed = False
                 else:
                     with lock('restore', blocking=False):
-                        snapshot = capture()
+                        snapshot = capture(track_recovery=True)
                         current = signature(snapshot)
-                        if current != previous:
+                        meta = read_json(STATE / 'instance.json', {})
+                        sync = (meta.get('recovery_started') and not meta.get('recovery_synced')) or recovery_due(meta)
+                        if checkpoint_paused():
+                            previous, closed = None, False
+                        elif closed or sync:
+                            save(snapshot, closed=closed or sync)
+                            previous, changed, closed = current, time.monotonic(), False
+                        elif current != previous:
                             previous, changed = current, time.monotonic()
                         elif time.monotonic() - changed >= 20:
                             save(snapshot)
@@ -574,13 +877,52 @@ def watch():
             except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
                 print(f'Checkpoint delayed: {error}', file=sys.stderr, flush=True)
                 previous = None
-            time.sleep(10)
+            meta = read_json(STATE / 'instance.json', {})
+            remaining = recovery.remaining(meta) if meta.get('instance') == instance() else None
+            closed = events.wait(min(10, remaining) if remaining else 10) or closed
+
+
+def invoke_restore(source):
+    run_id = f'{time.time_ns():x}-{os.getpid()}'
+    start = time.monotonic()
+
+    def event(name, **fields):
+        restore_log.record(STATE, run_id, name, **fields)
+
+    event('invoked', source=source, instance=os.environ.get('HYPRLAND_INSTANCE_SIGNATURE'),
+          callers=restore_log.caller_chain())
+    try:
+        initialize()
+        with lock('restore', blocking=False):
+            if recovery_due(read_json(STATE / 'instance.json', {})):
+                # Honour the deadline even if the watcher has not reached its
+                # next census yet. Never replay the abandoned pre-boot target.
+                save(capture(), closed=True)
+            snapshot = read_json(STATE / 'restore.json')
+            if not snapshot:
+                raise RuntimeError('No automatic desktop checkpoint is available yet.')
+            event('started', checkpoint_saved=snapshot.get('saved'), checkpoint_instance=snapshot.get('instance'))
+            with lock('state'):
+                meta = read_json(STATE / 'instance.json', {})
+                meta.update(instance=instance(), recovery_started=True)
+                meta.setdefault('recovery_reason', 'restore')
+                write_json(STATE / 'instance.json', meta)
+            ok = restore(snapshot, on_event=event)
+            event('finished', ok=ok, elapsed_seconds=round(time.monotonic() - start, 3),
+                  result=read_json(STATE / 'last-result.json', {}))
+            return 0 if ok else 1
+    except BaseException as error:
+        event('busy' if isinstance(error, BlockingIOError) else 'failed',
+              error_type=type(error).__name__, error=str(error),
+              elapsed_seconds=round(time.monotonic() - start, 3))
+        raise
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['save-shutdown', 'restore', 'watch'])
     parser.add_argument('--if-shutting-down', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--source', choices=['shortcut', 'cli'], default='cli', help=argparse.SUPPRESS)
     args = parser.parse_args()
     os.umask(0o077)
     if args.command == 'save-shutdown':
@@ -590,15 +932,11 @@ def main():
         except Exception:
             pass
         return 0
+    if args.command == 'restore':
+        return invoke_restore(args.source)
     initialize()
     if args.command == 'watch':
         watch()
-    else:
-        snapshot = read_json(STATE / 'restore.json')
-        if not snapshot:
-            raise RuntimeError('No automatic desktop checkpoint is available yet.')
-        with lock('restore', blocking=False):
-            return 0 if restore(snapshot) else 1
     return 0
 
 

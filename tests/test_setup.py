@@ -70,6 +70,25 @@ class SetupTests(unittest.TestCase):
             self.integration.install()
         self.assertTrue(self.integration.receipt.exists())
 
+    def test_upgrade_adds_shortcut_source_tag_and_preserves_user_bindings(self):
+        self.integration.install()
+        receipt = json.loads(self.integration.receipt.read_text())
+        binding = next(item for item in receipt['files'] if item['path'] == str(self.integration.bindings))
+        new = binding['block']
+        old = new.replace(' --source shortcut', '').replace('hl.unbind("SUPER + SHIFT + R")\n', '')
+        text = self.integration.bindings.read_text().replace(new, old) + '\n-- Added by user\n'
+        self.integration.bindings.write_text(text)
+        binding.update(block=old, after=binding['after'].replace(new, old))
+        self.integration.receipt.write_text(json.dumps(receipt))
+        self.commands.clear()
+        self.integration.upgrade()
+        self.assertIn('--source shortcut', self.integration.bindings.read_text())
+        self.assertIn('-- Added by user', self.integration.bindings.read_text())
+        self.assertIn(['hyprctl', 'reload'], self.commands)
+        self.assertIn(['hyprctl', 'configerrors'], self.commands)
+        self.integration.uninstall()
+        self.assertEqual(self.integration.bindings.read_text(), '-- My keybindings\n\n-- Added by user\n')
+
     def test_watcher_and_lifecycle_use_the_same_xdg_directories(self):
         self.integration.install()
         for unit in (setup.UNIT, setup.LIFECYCLE_UNIT):

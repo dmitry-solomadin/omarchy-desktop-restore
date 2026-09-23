@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.dmitry-solomadin.desktop-restore",
   "name": "Desktop Restore",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "author": "dmitry-solomadin",
   "description": "Restore desktop workspaces and OpenCode, Codex, Claude Code and herdr sessions with fast silent shutdown saves",
   "kinds": ["service"],
