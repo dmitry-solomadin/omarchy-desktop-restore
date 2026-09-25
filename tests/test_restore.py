@@ -23,7 +23,7 @@ class RestoreTests(unittest.TestCase):
                       'class': 'foot', 'title': 'old title', 'pid': 1, 'address': 'old',
                       'workspace': '3', 'launch': ['foot']}
         self.actual = {**self.saved, 'address': 'new', 'pid': 2, 'title': 'startup',
-                       'kind': 'agent-unresolved', 'workspace': {'name': '3'}, 'monitor': 0}
+                       'kind': 'agent-unresolved', 'workspace': {'name': '3'}, 'monitor': 0, 'mapped': True}
         self.snapshot = {'instance': 'old-login', 'windows': [self.saved]}
 
     def test_placement_failure_does_not_duplicate_a_successful_launch_on_retry(self):
@@ -57,6 +57,15 @@ class RestoreTests(unittest.TestCase):
         new = {**self.actual, 'title': self.saved['title']}
         with patch.object(app, 'hypr', return_value=[existing, new]):
             actual, _ = app.wait_for_window(self.saved, {existing['address']}, set(), True)
+        self.assertEqual(actual['address'], 'new')
+
+    def test_wait_does_not_claim_hidden_or_unmapped_matching_windows(self):
+        new = {**self.actual, 'title': self.saved['title']}
+        hidden = {**new, 'address': 'hidden', 'hidden': True}
+        unmapped = {**new, 'address': 'unmapped', 'mapped': False}
+        with patch.object(app, 'hypr', side_effect=[[hidden, unmapped], [hidden, unmapped, new]]), \
+             patch.object(app.time, 'sleep'):
+            actual, _ = app.wait_for_window(self.saved, set(), set(), False)
         self.assertEqual(actual['address'], 'new')
 
     def test_another_browser_profile_does_not_block_launch(self):

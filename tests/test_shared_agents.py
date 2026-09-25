@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 import agents
 import desktop_restore as app
+import shared_agents
 from shared_agents import restore_entries
 
 
@@ -94,6 +95,66 @@ class SharedAgentsTests(unittest.TestCase):
         self.assertEqual([w['kind'] for w in snapshot['windows']], ['claude', 'codex'])
         self.assertTrue(all('placement' not in w for w in snapshot['windows']))
 
+    def test_claude_titles_preserve_workspaces_with_an_unidentified_shell_slot(self):
+        self.procs[22]['cmd'] = ['claude']
+        self.hook(22, 'claude', 'aaa-game-session')
+        self.add_window(3, ['zsh'], title='~/Work')
+        self.add_window(4, ['claude'], title='◑ Linux rendering')
+        self.hook(24, 'claude', 'bbb-linux-session')
+        self.windows[0]['title'] = '✳ Stocks autocomplete'
+        self.windows[1]['title'] = '✳ Game testing'
+        titles = {'claude-exact-123': 'Stocks autocomplete',
+                  'aaa-game-session': 'Game testing', 'bbb-linux-session': 'Linux rendering'}
+        with patch.object(shared_agents, 'claude_title', side_effect=lambda s: titles[s['session']]):
+            snapshot = app.capture(fast=True)
+        entries = restore_entries(snapshot)
+        self.assertEqual({e['session']: e['workspace'] for e in entries},
+                         {'claude-exact-123': '1', 'aaa-game-session': '2', 'bbb-linux-session': '4'})
+        self.assertTrue(all(e['placement'] == 'title-matched' for e in entries))
+        # Launch order and inventory order must not determine placement.
+        snapshot['agent_groups'][0]['sessions'].reverse()
+        self.assertEqual({e['session']: e['workspace'] for e in restore_entries(snapshot)},
+                         {e['session']: e['workspace'] for e in entries})
+        with patch.object(app, 'capture', return_value=snapshot), patch.object(app, 'launch') as launch:
+            self.assertTrue(app.restore(snapshot))
+        launch.assert_not_called()
+        self.assertNotIn('warnings', app.read_json(self.state / 'last-result.json'))
+
+    def test_opencode_titles_keep_their_slots_despite_session_sort_order(self):
+        self.oc(1, title='Conversation 2')
+        self.oc(2, title='Conversation 1')
+        with patch.object(app, 'sessions', return_value=self.sessions(1, 2)):
+            entries = restore_entries(app.capture())
+        self.assertEqual({e['session']: e['workspace'] for e in entries},
+                         {'ses_exact_1': '2', 'ses_exact_2': '1'})
+        self.assertTrue(all(e['placement'] == 'title-matched' for e in entries))
+
+    def test_unmatched_session_cannot_take_a_title_matched_slot(self):
+        self.oc(2)
+        self.windows[0]['title'], self.windows[1]['title'] = self.windows[1]['title'], self.windows[0]['title']
+        with patch.object(app, 'sessions', return_value=self.sessions(2)):
+            entries = restore_entries(app.capture())
+        self.assertEqual([(e['kind'], e['workspace'], e['placement']) for e in entries],
+                         [('claude', '2', 'approximate'), ('opencode', '1', 'title-matched')])
+
+    def test_duplicate_claude_titles_do_not_claim_unique_placement(self):
+        self.procs[22]['cmd'] = ['claude']
+        self.hook(22, 'claude', 'other-claude-session')
+        for w in self.windows:
+            w['title'] = '✳ Same title'
+        with patch.object(shared_agents, 'claude_title', return_value='Same title'):
+            snapshot = app.capture()
+        self.assertTrue(all(e['placement'] == 'approximate' for e in restore_entries(snapshot)))
+        # Two sessions competing for just one matching window are ambiguous too.
+        snapshot['windows'][1]['title'] = 'Unknown'
+        self.assertTrue(all(e['placement'] == 'approximate' for e in restore_entries(snapshot)))
+
+    def test_window_title_changes_update_group_checkpoint_signature(self):
+        snapshot = app.capture()
+        changed = copy.deepcopy(snapshot)
+        changed['windows'][0]['title'] = 'A newly identifiable conversation'
+        self.assertNotEqual(app.signature(snapshot), app.signature(changed))
+
     def test_known_window_session_is_not_recaptured_by_group(self):
         self.add_window(3, ['claude', '--permission-mode', 'plan'])
         self.hook(23, 'claude', 'claude-exact-123')
@@ -159,6 +220,10 @@ class SharedAgentsTests(unittest.TestCase):
 
     def test_unmapped_sibling_disables_fallback(self):
         self.windows[1]['mapped'] = False
+        self.assertNotIn('agent_groups', app.capture())
+
+    def test_hidden_sibling_disables_visible_session_inventory(self):
+        self.windows[1]['hidden'] = True
         self.assertNotIn('agent_groups', app.capture())
 
     def test_unreadable_terminal_process_does_not_crash_capture(self):

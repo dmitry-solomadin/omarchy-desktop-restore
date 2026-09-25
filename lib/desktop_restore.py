@@ -700,6 +700,7 @@ def wait_for_window(saved, before, claimed, browser_launched):
     first_seen, locations = None, {}
     while time.monotonic() < deadline:
         candidates = [c for c in hypr('clients') if c['class'] == saved['class']
+                      and c.get('mapped') and not c.get('hidden')
                       and c['address'] not in claimed
                       and c['address'] not in before]
         for candidate in candidates:
@@ -724,11 +725,14 @@ def restore(snapshot, on_event=None):
     live = restore_entries(capture())
     claimed, errors = set(), []
     warnings = []
+    entries = restore_entries(snapshot)
     for group in snapshot.get('agent_groups', []):
         errors.extend(f"Shared terminal {group['key']}: {error}" for error in group['errors'])
-        if group['sessions']:
+        approximate = sum(w.get('agent_group') == group['key'] and w.get('placement') == 'approximate'
+                          for w in entries)
+        if approximate:
             warnings.append(f"Shared terminal {group['key']}: {len(group['sessions'])} exact sessions preserved; "
-                            'window placement is approximate')
+                            f'window placement is approximate for {approximate} session(s)')
     same = snapshot['instance'] == instance()
     restored = already = completed = 0
     mapping_path = STATE / 'restored-windows.json'
@@ -737,7 +741,7 @@ def restore(snapshot, on_event=None):
         mapping = {'instance': instance(), 'windows': {}}
     lanes = {}
     apps = None
-    for saved in restore_entries(snapshot):
+    for saved in entries:
         if saved['kind'] == 'app' and saved['class'].lower() == 'org.quickshell':
             if apps is None:
                 apps = desktop_apps()
@@ -841,7 +845,8 @@ def restore(snapshot, on_event=None):
 def signature(snapshot):
     # Ignore frequently-changing browser titles; track terminal directories and sessions.
     windows = [(w['address'], w['workspace'], w['at'], w['size'], w['floating'], w['fullscreen'],
-                w.get('session'), w.get('cwd'), w.get('error')) for w in snapshot['windows']]
+                w.get('session'), w.get('cwd'), w.get('error'),
+                w.get('title') if w.get('agent_group') else None) for w in snapshot['windows']]
     if snapshot.get('agent_groups'):
         windows.append(json.dumps(snapshot['agent_groups'], sort_keys=True))
     return windows

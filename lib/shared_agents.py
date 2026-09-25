@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from agents import terminal_agent, terminal_branch, terminal_roots
+from agent_titles import claude_title, matched_slots
 from terminals import TERMINALS, terminal_launch
 
 
@@ -18,7 +19,7 @@ def capture_group(siblings, slots, procs, state, exact, identity, resolve_openco
     # A foreground process in a hidden tab is also foreground on its own PTY.
     # Do not enumerate a group whose surfaces cannot all be visible windows.
     if (terminal not in TERMINALS or len(siblings) < 2 or len(roots) != len(siblings)
-            or any(not w.get('mapped') or not w.get('class') for w in siblings)
+            or any(not w.get('mapped') or w.get('hidden') or not w.get('class') for w in siblings)
             or len({p['tty'] for p in roots.values()}) != len(roots)):
         return None
     ambiguous = {w['address'] for w in slots}
@@ -72,6 +73,10 @@ def capture_group(siblings, slots, procs, state, exact, identity, resolve_openco
             continue
         session = dict(session)
         session['key'] = key + '-' + hashlib.sha256(repr(ident).encode()).hexdigest()[:16]
+        if session['kind'] == 'claude':
+            title = claude_title(session)
+            if title:
+                session['title'] = title
         group['sessions'].append(session)
     return group
 
@@ -96,7 +101,7 @@ def deduplicate_groups(groups, identity):
 
 
 def restore_entries(snapshot):
-    """Keep real windows separate from synthetic, explicitly approximate slots."""
+    """Preserve known associations before allocating remaining approximate slots."""
     windows = snapshot['windows']
     entries = [w for w in windows if not w.get('agent_group')]
     seen = {w['key'] for w in entries}
@@ -104,19 +109,34 @@ def restore_entries(snapshot):
         slots = [w for w in windows if w['key'] in group['window_keys']]
         if not slots:
             continue
-        for index, session in enumerate(group['sessions']):
+        # Title matching also repairs older OpenCode checkpoints that retained
+        # titles but discarded their window association. Do not consult mutable
+        # session metadata here: the checkpoint's evidence is authoritative.
+        assignments = matched_slots(group['sessions'], slots)
+        # Legacy inventories can contain more sessions than slots. Preserve
+        # every conversation even then, but only reuse reserved slots as a last
+        # resort when no unassigned layout is available at all.
+        remaining = [w for w in slots if w['key'] not in assignments.values()] or slots
+        index = 0
+        for session in group['sessions']:
             if session['key'] in seen:
                 continue
             seen.add(session['key'])
-            slot = slots[index % len(slots)]
+            matched = assignments.get(session['key'])
+            if matched:
+                slot = next(w for w in slots if w['key'] == matched)
+            else:
+                slot = remaining[index % len(remaining)]
+                index += 1
             # These addresses are inventory identities, not desktop windows.
             # In particular, never use the slot's real address to decide that a
             # different conversation is already open during same-login restore.
             entry = {key: slot[key] for key in ('class', 'workspace', 'monitor', 'at', 'size',
                                                'floating', 'fullscreen')}
             entry.update(session, address='group-session:' + session['key'], pid=group['pid'],
-                         placement='approximate', agent_group=group['key'], terminal=group['terminal'])
-            entry['title'] = session.get('title', f"{session['kind']}: {session['session']}")
+                         placement='title-matched' if matched else 'approximate',
+                         agent_group=group['key'], terminal=group['terminal'])
+            entry['title'] = slot['title'] if matched else session.get('title', f"{session['kind']}: {session['session']}")
             entry['launch'] = terminal_launch(group['terminal'], slot, session['cwd'], session['argv'])
             entries.append(entry)
     return entries

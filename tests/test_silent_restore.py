@@ -72,7 +72,7 @@ class SilentRestoreTests(unittest.TestCase):
     def restore_scenario(self, initial, final):
         saved = {'key': 'test', 'address': 'old', 'pid': 1, 'title': 'test', 'class': 'test',
                  'kind': 'terminal', 'workspace': '9', 'launch': ['ghostty']}
-        actual = {**saved, 'address': 'new', 'pid': 2}
+        actual = {**saved, 'address': 'new', 'pid': 2, 'mapped': True}
         launched = False
 
         def launch(_):

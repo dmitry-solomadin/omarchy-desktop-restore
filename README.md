@@ -17,7 +17,8 @@ Version **0.6.3** · Omarchy 4 / Lua-based Hyprland · MIT license
   Codex; default and named herdr sessions.
 - **Shared-process fallback:** preserves identifiable agent sessions even when
   several terminal windows share a PID and their individual shell associations
-  are unknown. Conversation identity stays exact; placement is approximate.
+  are unknown. Unique Claude/OpenCode titles retain their saved window slots;
+  unmatched sessions use explicitly approximate placement.
 - **Regular application windows:** reopens apps such as Signal and browsers such
   as Chrome, Chromium, Brave, Firefox and Zen, using each app's native recovery.
 - **Desktop layout:** numbered, named and special workspaces, connected monitors,
@@ -78,8 +79,13 @@ Reliable window-to-agent matches take priority and retain their original layout.
 When that association is ambiguous, Desktop Restore inventories the terminal's
 foreground agent branches and saves recoverable sessions as a group. On restore,
 each conversation opens once, using the group's saved window slots for best-effort
-workspace and layout placement. Sessions already captured through reliable matches
-are excluded from the fallback.
+workspace and layout placement. Unique OpenCode window titles and Claude's explicit
+local session-title metadata are matched to their original slots before assigning
+any unmatched sessions. Claude activity indicators are ignored; ambiguous titles
+and truncated Claude prefixes are not guessed. Claude title lookup reads at most
+the last 1 MiB of its known session file, respects `CLAUDE_CONFIG_DIR`, and falls back to
+approximate placement when title metadata is unavailable. Sessions already captured
+through reliable matches are excluded from the fallback.
 
 Claude Code and Codex still require current session-hook records; herdr uses its
 named/default session. OpenCode 1 and 2 use their existing visible conversation
@@ -173,8 +179,8 @@ matching desktop launcher without application-specific restore code.
 - **Terminals:** no tabs/splits, external multiplexers or remote WezTerm domains.
   Normal terminal configuration applies; custom launch flags are not replayed.
   Foot server windows reopen as standalone Foot windows. Ambiguous shared-process
-  windows use the agent-session fallback where possible; their exact window-to-session
-  placement and unidentified plain-shell slots cannot be recovered.
+  windows use the agent-session fallback where possible; unmatched window-to-session
+  placement remains approximate, and unidentified plain-shell slots cannot be recovered.
 - **Agents:** visible local sessions only; no hidden tabs, background jobs or
   remote Codex/OpenCode servers. Supported model/profile/permission options and
   agent home paths are retained, not arbitrary arguments or environment variables.
