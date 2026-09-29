@@ -1,5 +1,6 @@
 """Launchable desktop entries and application identity inside a shared shell."""
 import copy
+import json
 import os
 from pathlib import Path
 import sys
@@ -20,7 +21,8 @@ class AppLauncherTests(unittest.TestCase):
         self.system = self.root / 'system'
         for root in (self.user, self.system):
             (root / 'applications').mkdir(parents=True)
-        for mock in (patch.dict(os.environ, XDG_DATA_HOME=str(self.user), XDG_DATA_DIRS=str(self.system)),
+        for mock in (patch.dict(os.environ, XDG_DATA_HOME=str(self.user), XDG_DATA_DIRS=str(self.system),
+                               XDG_CONFIG_HOME=str(self.root / 'config')),
                      patch.object(app, 'STATE', self.root / 'state'),
                      patch.object(app, 'instance', return_value='new-login'),
                      patch.object(app, 'report')):
@@ -137,6 +139,63 @@ class AppLauncherTests(unittest.TestCase):
         apps = app.desktop_apps()
         expected = app.app_launcher(self.client, 'quickshell', apps)
         self.assertEqual(app.app_launcher({**self.client, 'title': 'Different document'}, 'quickshell', apps), expected)
+
+    def mappings(self, entries):
+        path = self.root / 'config/desktop-restore/apps.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(entries))
+
+    def mapping(self, **overrides):
+        return {'class': 'org.quickshell', 'title': 'Stocks', 'desktop_id': self.desktop_id, **overrides}
+
+    def test_mapping_captures_shared_window_launcher_and_repairs_old_checkpoint(self):
+        self.mappings([self.mapping()])
+        client = {**self.client, 'class': 'org.quickshell', 'title': 'Stocks'}
+        with patch.object(app, 'processes', return_value={10: {'cmd': ['quickshell']}}), \
+             patch.object(app, 'hypr', side_effect=[[client], [{'id': 0, 'name': 'DP-1'}]]):
+            saved, = app.capture()['windows']
+        self.assertEqual(saved['launch'], ['gio', 'launch', str(self.launcher)])
+        self.assertEqual(saved['match_title'], 'Stocks')
+        old = {**self.legacy, 'title': 'Stocks', 'error': 'Previously unresolved'}
+        repaired = app.resolve_saved_app(old, app.desktop_apps())
+        self.assertNotIn('error', repaired)
+        self.assertEqual(repaired['launch'], saved['launch'])
+        self.assertEqual(old['error'], 'Previously unresolved')
+
+    def test_mapping_requires_exact_title_and_an_actual_desktop_id(self):
+        self.mappings([self.mapping()])
+        with self.assertRaisesRegex(ValueError, 'per-application ID'):
+            app.app_launcher({**self.legacy, 'title': 'Settings'}, 'quickshell', app.desktop_apps())
+        self.mappings([self.mapping(desktop_id='missing')])
+        with self.assertRaisesRegex(ValueError, 'unavailable'):
+            app.app_launcher({**self.legacy, 'title': 'Stocks'}, 'quickshell', app.desktop_apps())
+        self.entry('actual-id', 'Exec=alias\n')
+        self.mappings([self.mapping(desktop_id='alias')])
+        with self.assertRaisesRegex(ValueError, 'unavailable'):
+            app.app_launcher({**self.legacy, 'title': 'Stocks'}, 'quickshell', app.desktop_apps())
+
+    def test_conflicting_and_malformed_mappings_are_reported(self):
+        for entries, message in (([self.mapping(), self.mapping(desktop_id='other')], 'Multiple configured'),
+                                 ({}, 'Invalid launcher mappings'), ([{'class': 'x'}], 'Invalid launcher mappings')):
+            self.mappings(entries)
+            with self.subTest(entries=entries), self.assertRaisesRegex(ValueError, message):
+                app.app_launcher({**self.legacy, 'title': 'Stocks'}, 'quickshell', app.desktop_apps())
+
+    def test_mapped_window_wait_ignores_other_shared_host_windows(self):
+        saved = {**self.legacy, 'title': 'Stocks', 'match_title': 'Stocks'}
+        other = {**self.client, 'class': 'org.quickshell', 'title': 'Settings'}
+        actual = {**other, 'address': 'stocks', 'title': 'Stocks'}
+        with patch.object(app, 'hypr', side_effect=[[other], [other, actual]]), \
+             patch.object(app.time, 'sleep'):
+            found, moved = app.wait_for_window(saved, set(), set(), False)
+        self.assertEqual(found, actual)
+        self.assertFalse(moved)
+        self.assertIsNone(app.existing_window(saved, [{**other, 'kind': 'app'}], set()))
+
+    def test_mapped_placement_rule_is_scoped_to_title(self):
+        with patch.object(app, 'run', return_value='ok') as run:
+            app.arm_mapping_rule({**self.legacy, 'match_title': 'Stocks'}, {'no_initial_focus': True})
+        self.assertIn('initial_title = "^Stocks$"', run.call_args.args[0][-1])
 
 
 if __name__ == '__main__':

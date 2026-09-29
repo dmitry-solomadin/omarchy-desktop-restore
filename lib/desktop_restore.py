@@ -372,8 +372,38 @@ def desktop_apps():
     return apps
 
 
+def mapped_launcher(window, apps):
+    """Resolve explicit class/title mappings, including shared-process windows."""
+    path = Path(os.environ.get('XDG_CONFIG_HOME', HOME / '.config')) / 'desktop-restore/apps.json'
+    try:
+        mappings = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise ValueError(f'Cannot read launcher mappings {path}: {error}') from error
+    if not isinstance(mappings, list) or any(
+            not isinstance(item, dict) or any(not isinstance(item.get(key), str) or not item[key]
+                                            for key in ('class', 'title', 'desktop_id'))
+            for item in mappings):
+        raise ValueError(f'Invalid launcher mappings in {path}: expected class, title and desktop_id strings')
+    matches = {item['desktop_id'] for item in mappings
+               if item['class'].lower() == window['class'].lower() and item['title'] == window['title']}
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ValueError('Multiple configured launchers match this window')
+    desktop_id = matches.pop()
+    desktop = apps.get(desktop_id.lower())
+    if not desktop or Path(desktop).stem != desktop_id:
+        raise ValueError(f'Configured desktop launcher is unavailable: {desktop_id}')
+    return {'desktop_id': desktop_id, 'launch': ['gio', 'launch', desktop], 'match_title': window['title']}
+
+
 def app_launcher(window, executable, apps):
-    """Match standard application identity, never window titles or plugin names."""
+    """Use explicit mappings, then standard application identity and executable."""
+    mapped = mapped_launcher(window, apps)
+    if mapped:
+        return mapped
     window_class = window['class'].lower()
     if window_class == 'org.quickshell':
         raise ValueError('Shared Quickshell window lacks a per-application ID; cannot identify its launcher')
@@ -391,7 +421,7 @@ def app_launcher(window, executable, apps):
 
 
 def resolve_saved_app(saved, apps):
-    """Revalidate legacy shared-host entries without retaining hardcoded guesses."""
+    """Re-resolve mapped/unresolved entries against currently installed launchers."""
     saved = dict(saved)
     saved.pop('desktop_id', None)
     saved.pop('match_title', None)
@@ -614,7 +644,7 @@ def identity(w):
         return ('opencode', w.get('session'), tuple(sorted(opencode_context(w.get('agent_env', {})).items())))
     if w['kind'] in ('terminal', 'opencode-home'):
         return (w['kind'], w['class'], w.get('cwd'))
-    if w['kind'] == 'app' and w['class'].lower() == 'org.quickshell':
+    if w['kind'] == 'app' and (w.get('match_title') or w['class'].lower() == 'org.quickshell'):
         return ('app', w['class'], w['title'])
     return (w['kind'], w['class'])
 
@@ -626,6 +656,8 @@ def existing_window(saved, live, claimed, same_instance=False):
         if exact:
             return exact
     candidates = [w for w in candidates if identity(w) == identity(saved)]
+    if saved.get('match_title'):
+        candidates = [w for w in candidates if w['title'] == saved['match_title']]
     if saved['kind'] in ('opencode', 'opencode1') and not saved.get('session'):
         return None
     return next((w for w in candidates if w['title'] == saved['title']), candidates[0] if candidates else None)
@@ -638,12 +670,15 @@ def arm_mapping_rule(saved, rules):
     # Hyprland owns the deadline, so even a killed restore leaves no active rule.
     fields = ', '.join(f'{key} = {lua(value)}' for key, value in rules.items())
     pattern = '^' + re.escape(saved['class']) + '$'
+    match = f'initial_class = {lua(pattern)}'
+    if saved.get('match_title'):
+        match += ', initial_title = ' + lua('^' + re.escape(saved['match_title']) + '$')
     script = f'''
         _desktop_restore_spawns = _desktop_restore_spawns or {{}}
         local key = {lua(name)}
         local entry = {{}}
         entry.rule = hl.window_rule({{ name = key, enabled = true,
-            match = {{ initial_class = {lua(pattern)} }}, {fields} }})
+            match = {{ {match} }}, {fields} }})
         _desktop_restore_spawns[key] = entry
         hl.timer(function()
             if _desktop_restore_spawns[key] == entry then
@@ -700,6 +735,7 @@ def wait_for_window(saved, before, claimed, browser_launched):
     first_seen, locations = None, {}
     while time.monotonic() < deadline:
         candidates = [c for c in hypr('clients') if c['class'] == saved['class']
+                      and (not saved.get('match_title') or c['title'] == saved['match_title'])
                       and c.get('mapped') and not c.get('hidden')
                       and c['address'] not in claimed
                       and c['address'] not in before]
@@ -742,7 +778,8 @@ def restore(snapshot, on_event=None):
     lanes = {}
     apps = None
     for saved in entries:
-        if saved['kind'] == 'app' and saved['class'].lower() == 'org.quickshell':
+        if saved['kind'] == 'app' and (saved['class'].lower() == 'org.quickshell'
+                                     or saved.get('match_title') or saved.get('error')):
             if apps is None:
                 apps = desktop_apps()
             saved = resolve_saved_app(saved, apps)

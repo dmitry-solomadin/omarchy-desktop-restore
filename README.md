@@ -166,10 +166,39 @@ Desktop entries need an `Exec` command or D-Bus activation to be considered
 launchers. Application IDs matching desktop-entry filenames take priority over
 `StartupWMClass` aliases, then unique executable matches. Ambiguous aliases are
 reported instead of choosing the first entry. Shared shell executables are not
-used to infer a plugin launcher. Generic `org.quickshell` windows lack a
-per-application identity and are reported as unresolved, including entries from
-older checkpoints. Custom applications exposing their own app ID can use their
-matching desktop launcher without application-specific restore code.
+used to infer a plugin launcher. Custom applications exposing their own app ID
+can use their matching desktop launcher without application-specific restore code.
+
+### Apps without a unique application ID
+
+For shared-process apps or other unidentified windows, add explicit launch mappings
+to `${XDG_CONFIG_HOME:-~/.config}/desktop-restore/apps.json`. For example:
+
+```json
+[
+  {
+    "class": "org.quickshell",
+    "title": "Stocks",
+    "desktop_id": "io.github.dmitry-solomadin.omastocks"
+  }
+]
+```
+
+Find the class and title with `hyprctl clients -j`. The `desktop_id` is the
+installed `.desktop` filename without its extension. Each mapping requires an
+exact title and a case-insensitive class match; it takes priority over automatic
+launcher discovery. Add another object for each app that needs a mapping.
+
+Capture saves the resolved desktop launcher alongside the window layout. Restore
+also re-resolves mapped and previously unresolved entries, so a new mapping can
+repair an older checkpoint immediately. The launcher must still be installed;
+missing launchers and conflicting mappings are reported. Mapping changes are read
+on the next capture/restore, with no service restart required.
+
+Mapped windows are matched and placed by class **and title**, so another window
+from the same shell is not mistaken for the app. Use this for stable window titles;
+document-dependent titles need their own matching entries. Generic `org.quickshell`
+windows without a mapping remain unresolved instead of relaunching the entire shell.
 
 ## Limits
 
