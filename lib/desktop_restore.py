@@ -333,8 +333,31 @@ def shared_opencode(agents, windows, available_sessions):
     return resolved, errors
 
 
+def webapp_class(command):
+    """Infer the default-profile Chromium app ID of a standard Omarchy web app."""
+    if len(command) != 2 or Path(command[0]).name != 'omarchy-launch-webapp':
+        return None  # Extra flags may change the profile, app ID or browser context.
+    raw = command[1]
+    if '%' in raw.replace('%%', ''):
+        return None  # Desktop Exec field codes are not a fixed launch URL.
+    raw = raw.replace('%%', '%')
+    url = urllib.parse.urlsplit(raw)
+    if (url.scheme not in ('http', 'https') or not url.hostname
+            or not raw.isascii() or re.search(r'[\s\\]', raw)
+            or url.username or url.password):
+        return None
+    path = url.path or '/'
+    if any(part.lower().replace('%2e', '.') in ('.', '..') for part in path.split('/')):
+        return None  # Do not approximate GURL's path canonicalization.
+    # Chromium GenerateApplicationNameFromURL uses host + '_' + path (no
+    # scheme, port, query or fragment). Its desktop filename adds the profile
+    # and replaces illegal filename characters. Collisions stay ambiguous.
+    name = f'chrome-{url.hostname}_{path}-Default'
+    return re.sub(r'["*/:<>?\\|]', '_', name)
+
+
 def desktop_apps():
-    ids, classes, executables = {}, {}, {}
+    ids, classes, webapps, executables = {}, {}, {}, {}
     seen = set()
 
     def index(table, key, path):
@@ -360,6 +383,7 @@ def desktop_apps():
                     continue  # Icon/identity-only entries cannot launch a window.
                 index(ids, path.stem, path)
                 index(classes, entry.get('StartupWMClass', ''), path)
+                index(webapps, webapp_class(command), path)
                 if command and Path(command[0]).name not in SHELL_HOSTS:
                     index(executables, Path(command[0]).name, path)
             except (configparser.Error, ValueError, KeyError):
@@ -367,7 +391,7 @@ def desktop_apps():
     # Explicit desktop IDs outrank declared WM classes, then executable aliases.
     # Retain ambiguous aliases as None so lookup cannot fall through and guess.
     apps = {}
-    for table in (executables, classes, ids):
+    for table in (executables, webapps, classes, ids):
         apps.update({key: next(iter(paths)) if len(paths) == 1 else None for key, paths in table.items()})
     return apps
 
@@ -408,7 +432,7 @@ def app_launcher(window, executable, apps):
     if window_class == 'org.quickshell':
         raise ValueError('Shared Quickshell window lacks a per-application ID; cannot identify its launcher')
     keys = [window_class]
-    if executable not in SHELL_HOSTS:
+    if executable not in SHELL_HOSTS and not window_class.startswith(('chrome-', 'chromium-')):
         keys.append(executable.lower())
     for key in keys:
         if key not in apps:

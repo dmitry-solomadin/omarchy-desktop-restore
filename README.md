@@ -169,6 +169,14 @@ reported instead of choosing the first entry. Shared shell executables are not
 used to infer a plugin launcher. Custom applications exposing their own app ID
 can use their matching desktop launcher without application-specific restore code.
 
+Standard Omarchy web-app launchers (`omarchy-launch-webapp <url>`) are also
+matched by the URL-derived Chromium window class, so apps such as Discord do
+not need `StartupWMClass` edits or title mappings. Inference covers default-profile
+launches without extra flags; explicit desktop IDs and declared classes still
+take priority. URLs that produce the same window identity are reported as
+ambiguous. Unrecognized web-app windows never fall back to launching a generic
+browser. Existing unresolved checkpoints are rechecked on restore.
+
 ### Apps without a unique application ID
 
 For shared-process apps or other unidentified windows, add explicit launch mappings

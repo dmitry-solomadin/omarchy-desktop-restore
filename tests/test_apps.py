@@ -145,6 +145,60 @@ class AppLauncherTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(entries))
 
+    def test_omarchy_webapp_capture_and_old_checkpoint_recovery(self):
+        launcher = self.entry('Discord', 'Exec=omarchy-launch-webapp https://discord.com/channels/@me\n')
+        client = {**self.client, 'class': 'chrome-discord.com__channels_@me-Default',
+                  'title': '(18) Discord | #channel'}
+        with patch.object(app, 'processes', return_value={10: {'cmd': ['chrome']}}), \
+             patch.object(app, 'hypr', side_effect=[[client], [{'id': 0, 'name': 'DP-1'}]]):
+            saved, = app.capture()['windows']
+        self.assertNotIn('error', saved)
+        self.assertEqual(saved['desktop_id'], 'Discord')
+        self.assertEqual(saved['launch'], ['gio', 'launch', str(launcher)])
+        old = {**saved, 'title': 'A different channel', 'error': 'No desktop launcher found'}
+        old.pop('launch')
+        old.pop('desktop_id')
+        repaired = app.resolve_saved_app(old, app.desktop_apps())
+        self.assertNotIn('error', repaired)
+        self.assertEqual(repaired['launch'], saved['launch'])
+        self.assertNotIn('match_title', repaired)
+
+    def test_webapp_url_identity_collisions_are_ambiguous(self):
+        self.entry('one', 'Exec=omarchy-launch-webapp https://example.com/chat?account=one\n')
+        self.entry('two', 'Exec=omarchy-launch-webapp http://example.com:8080/chat?account=two\n')
+        with self.assertRaisesRegex(ValueError, 'Multiple desktop launchers'):
+            app.app_launcher({'class': 'chrome-example.com__chat-Default', 'title': ''},
+                             'chrome', app.desktop_apps())
+
+    def test_unknown_webapp_does_not_launch_generic_browser(self):
+        self.entry('google-chrome', 'Exec=chrome\n')
+        self.entry('Discord', 'Exec=omarchy-launch-webapp https://discord.com/channels/@me\n')
+        for window_class in ('chrome-unknown.com__-Default',
+                             'chrome-discord.com__channels_@me-Profile_1'):
+            with self.subTest(window_class=window_class), self.assertRaisesRegex(ValueError, 'No desktop launcher'):
+                app.app_launcher({'class': window_class, 'title': ''}, 'chrome', app.desktop_apps())
+
+    def test_webapp_inference_honors_overrides_and_declared_identity(self):
+        self.entry('Discord', 'Exec=omarchy-launch-webapp https://discord.com/channels/@me\n', self.system)
+        self.entry('Discord', 'Hidden=true\n')
+        key = 'chrome-discord.com__channels_@me-default'
+        self.assertNotIn(key, app.desktop_apps())
+        explicit = self.entry('explicit', f'Exec=custom-wrapper\nStartupWMClass={key}\n')
+        self.assertEqual(app.desktop_apps()[key], str(explicit))
+
+    def test_webapp_inference_only_accepts_fixed_standard_launches(self):
+        for command in (['omarchy-launch-webapp'],
+                        ['omarchy-launch-webapp', '%u'],
+                        ['omarchy-launch-webapp', 'https://example.com', '--profile-directory=Profile 1'],
+                        ['omarchy-launch-webapp', 'https://example.com/a/../b'],
+                        ['unrelated', 'https://example.com']):
+            with self.subTest(command=command):
+                self.assertIsNone(app.webapp_class(command))
+        self.assertEqual(app.webapp_class(['omarchy-launch-webapp', 'https://example.com']),
+                         'chrome-example.com__-Default')
+        self.assertEqual(app.webapp_class(['/usr/bin/omarchy-launch-webapp', 'https://example.com/a%%20b']),
+                         'chrome-example.com__a%20b-Default')
+
     def mapping(self, **overrides):
         return {'class': 'org.quickshell', 'title': 'Stocks', 'desktop_id': self.desktop_id, **overrides}
 
