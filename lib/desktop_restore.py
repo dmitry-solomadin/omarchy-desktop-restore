@@ -116,7 +116,7 @@ def initialize():
         latest = read_json(STATE / 'latest.json')
         shutdown = read_json(STATE / 'shutdown.json')
         if (shutdown and shutdown.get('instance') == meta.get('instance')
-                and (not latest or shutdown.get('saved', 0) >= latest.get('saved', 0))):
+                and shutdown_precedes_teardown(shutdown, latest)):
             latest = shutdown
         protected = read_json(STATE / 'restore.json')
         expired_at_shutdown = (shutdown and shutdown.get('instance') == meta.get('instance')
@@ -624,6 +624,32 @@ def preparing_for_shutdown():
                 'PreparingForShutdown'], timeout=0.15) == 'b true'
 
 
+def shutdown_precedes_teardown(shutdown, latest):
+    """An in-flight autosave may finish after the pre-power fallback is frozen."""
+    return (not latest or shutdown.get('saved', 0) >= latest.get('saved', 0)
+            or (latest.get('instance') == shutdown.get('instance')
+                and latest.get('saved', 0) <= shutdown.get('protect_until', 0)))
+
+
+def protect_shutdown():
+    """Freeze the atomic last checkpoint before contending with capture/restore.
+
+    The watcher owns those locks during its census. Waiting for it can exceed
+    the power wrapper's hard deadline, so this fallback deliberately needs no
+    capture locks. Its protection window also covers an already-running save.
+    """
+    latest = read_json(STATE / 'latest.json')
+    if latest is None or latest.get('instance') != instance():
+        return None
+    now = time.time()
+    fallback = {**latest, 'captured': latest.get('saved'), 'saved': now,
+                'protect_until': now + 30}
+    if recovery_due(read_json(STATE / 'instance.json', {})):
+        fallback['recovery_grace_expired'] = True
+    write_json(STATE / 'shutdown.json', fallback)
+    return fallback['protect_until']
+
+
 def checkpoint_paused():
     if preparing_for_shutdown():
         return True
@@ -635,13 +661,14 @@ def checkpoint_paused():
 
 def save_shutdown(if_shutting_down=False):
     """Best effort only; caller enforces a process-group-wide 700 ms KILL deadline."""
+    protect_until = None if if_shutting_down else protect_shutdown()
     if if_shutting_down:
         if not preparing_for_shutdown():
             return
         # The menu saved before closing windows. Never replace that with teardown.
         saved = read_json(STATE / 'shutdown.json', {})
         latest = read_json(STATE / 'latest.json', {})
-        if saved.get('instance') == instance() and saved.get('saved', 0) >= latest.get('saved', 0):
+        if saved.get('instance') == instance() and shutdown_precedes_teardown(saved, latest):
             return
     # No initialization/rotation, waiting for locks, OpenCode requests, or notifications.
     with lock('restore', blocking=False), lock('state', blocking=False):
@@ -655,6 +682,8 @@ def save_shutdown(if_shutting_down=False):
             return  # Placement uncertainty is fine; unknown session identities are not.
         if recovery_due(read_json(STATE / 'instance.json', {})):
             snapshot['recovery_grace_expired'] = True
+        if protect_until is not None:
+            snapshot['protect_until'] = protect_until
         write_json(STATE / 'shutdown.json', snapshot)
 
 

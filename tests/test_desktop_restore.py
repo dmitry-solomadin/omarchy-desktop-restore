@@ -84,6 +84,100 @@ class CheckpointTests(unittest.TestCase):
                     app.save_shutdown()
                 self.assertLess(time.monotonic() - start, 0.1)
 
+    def shutdown_desktop(self):
+        full = {'instance': 'test-instance', 'saved': 90,
+                'windows': [{'title': 'conversation', 'session': 'exact-session'}]}
+        app.write_json(app.STATE / 'instance.json', {'instance': 'test-instance', 'recovery_started': True})
+        app.write_json(app.STATE / 'latest.json', full)
+        return full
+
+    def test_busy_watcher_preserves_desktop_through_teardown_and_next_login(self):
+        for held_lock in ('restore', 'state'):
+            with self.subTest(held_lock=held_lock):
+                full = self.shutdown_desktop()
+                with app.lock(held_lock), patch.object(app.time, 'time', return_value=100), \
+                     patch.object(app, 'capture') as capture:
+                    with self.assertRaises(BlockingIOError):
+                        app.save_shutdown()
+                capture.assert_not_called()
+                frozen = app.read_json(app.STATE / 'shutdown.json')
+                self.assertEqual(frozen['windows'], full['windows'])
+                self.assertEqual(frozen['captured'], 90)
+                with patch.object(app, 'preparing_for_shutdown', return_value=False), \
+                     patch.object(app.time, 'time', return_value=101):
+                    self.assertTrue(app.checkpoint_paused())
+                # Reproduce a census already past its pause check when the
+                # fallback was written. It must not win at the next login.
+                app.write_json(app.STATE / 'latest.json', {'instance': 'test-instance', 'saved': 101, 'windows': []})
+                with patch.object(app, 'preparing_for_shutdown', return_value=True), \
+                     patch.object(app, 'capture') as late_capture:
+                    app.save_shutdown(if_shutting_down=True)
+                late_capture.assert_not_called()
+                with patch.dict(os.environ, HYPRLAND_INSTANCE_SIGNATURE='next-login'):
+                    app.initialize()
+                self.assertEqual(app.read_json(app.STATE / 'restore.json')['windows'], full['windows'])
+
+    def test_failed_or_interrupted_capture_keeps_frozen_fallback(self):
+        for error in (RuntimeError('capture failed'), SystemExit('deadline')):
+            with self.subTest(error=error):
+                full = self.shutdown_desktop()
+                with patch.object(app.time, 'time', return_value=100), \
+                     patch.object(app, 'capture', side_effect=error):
+                    with self.assertRaises(type(error)):
+                        app.save_shutdown()
+                self.assertEqual(app.read_json(app.STATE / 'shutdown.json')['windows'], full['windows'])
+
+    def test_fresh_shutdown_capture_replaces_fallback(self):
+        self.shutdown_desktop()
+        fresh = {'instance': 'test-instance', 'saved': 101, 'windows': [{'title': 'new window'}]}
+        with patch.object(app.time, 'time', return_value=100), patch.object(app, 'capture', return_value=fresh):
+            app.save_shutdown()
+        saved = app.read_json(app.STATE / 'shutdown.json')
+        self.assertEqual(saved['windows'], fresh['windows'])
+        self.assertEqual(saved['protect_until'], 130)
+
+    def test_hard_kill_during_capture_leaves_durable_fallback(self):
+        full = self.shutdown_desktop()
+        script = '''
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import desktop_restore as app
+app.STATE = Path(sys.argv[2])
+app.capture = lambda **kwargs: time.sleep(30)
+app.save_shutdown()
+'''
+        result = subprocess.run(['/usr/bin/timeout', '--signal=KILL', '0.7s', sys.executable,
+                                 '-c', script, str(Path(app.__file__).parent), str(app.STATE)],
+                                capture_output=True, timeout=3)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(app.read_json(app.STATE / 'shutdown.json')['windows'], full['windows'])
+        # SIGKILL releases capture locks; the complete JSON remains readable.
+        with app.lock('restore', blocking=False), app.lock('state', blocking=False):
+            pass
+
+    def test_cancelled_power_action_resumes_saving_and_newer_work_wins(self):
+        self.shutdown_desktop()
+        with app.lock('restore'), patch.object(app.time, 'time', return_value=100):
+            with self.assertRaises(BlockingIOError):
+                app.save_shutdown()
+        with patch.object(app, 'preparing_for_shutdown', return_value=False), \
+             patch.object(app.time, 'time', return_value=131):
+            self.assertFalse(app.checkpoint_paused())
+        latest = {'instance': 'test-instance', 'saved': 140, 'windows': [{'title': 'new work'}]}
+        app.write_json(app.STATE / 'latest.json', latest)
+        with patch.dict(os.environ, HYPRLAND_INSTANCE_SIGNATURE='next-login'):
+            app.initialize()
+        self.assertEqual(app.read_json(app.STATE / 'restore.json'), latest)
+
+    def test_fallback_does_not_relabel_another_login_as_current(self):
+        old = {'instance': 'old-login', 'saved': 90, 'windows': [{'title': 'old'}]}
+        app.write_json(app.STATE / 'latest.json', old)
+        app.write_json(app.STATE / 'shutdown.json', old)
+        with app.lock('restore'), self.assertRaises(BlockingIOError):
+            app.save_shutdown()
+        self.assertEqual(app.read_json(app.STATE / 'shutdown.json'), old)
+
     def test_uncached_conversation_keeps_previous_checkpoint(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'STATE', Path(directory)):
             old = {'windows': [{'title': 'old'}]}

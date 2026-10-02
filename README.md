@@ -137,7 +137,7 @@ wrapper is missing.
 
 | Reboot/shutdown path | What gets saved |
 | --- | --- |
-| System menu (Super+Escape or power key), or the plugin's power wrapper | A save is attempted **before windows close**, using cached agent metadata, with a **700 ms cutoff**. Failure never blocks reboot or shutdown. |
+| System menu (Super+Escape or power key), or the plugin's power wrapper | The last automatic checkpoint is frozen **before windows close**, then a fresh save is attempted using cached agent metadata, with a **700 ms cutoff**. A busy watcher or failed capture retains the frozen fallback. Failure never blocks reboot or shutdown. |
 | CLI commands, update prompts or direct `systemctl` calls | Best-effort late save, with the last autosave as fallback |
 | Forced reboot, crash or power loss | Existing checkpoint only |
 
