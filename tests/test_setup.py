@@ -166,6 +166,25 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(parsed['another']['label'], 'Keep me')
         self.assertNotIn('system.reboot', parsed)
 
+    def test_upgrade_and_uninstall_preserve_sibling_agent_hooks(self):
+        self.integration.install()
+        settings = self.home / '.claude/settings.json'
+        config = json.loads(settings.read_text())
+        extra = {'type': 'command', 'command': 'my-custom-hook'}
+        for event in ('SessionStart', 'UserPromptSubmit'):
+            config['hooks'][event][0]['hooks'].append(extra)
+        settings.write_text(json.dumps(config))
+        self.integration.upgrade()
+        self.assertEqual(json.loads(settings.read_text()), config)
+        self.integration.uninstall()
+        remaining = json.loads(settings.read_text())
+        for event in ('SessionStart', 'UserPromptSubmit'):
+            self.assertEqual(remaining['hooks'][event], [{'hooks': [extra]}])
+
+    def test_changed_agent_hook_matcher_is_not_claimed_as_our_hook(self):
+        group = {'hooks': [{'type': 'command', 'command': 'record'}]}
+        self.assertIsNone(setup.Setup.agent_hook_group([{**group, 'matcher': 'different'}], group))
+
     def test_shell_entry_point_installs_once_without_restarting_on_reload(self):
         self.integration.root.mkdir()
         self.integration.execute('start')
@@ -189,6 +208,34 @@ class SetupTests(unittest.TestCase):
         self.commands.clear()
         self.integration.execute('start')
         self.assertEqual(self.commands, [['systemctl', '--user', 'start', setup.UNIT, setup.LIFECYCLE_UNIT]])
+
+    def test_linked_checkout_keeps_installed_paths_and_refreshes_edits(self):
+        checkout = self.home / 'checkout'
+        checkout.mkdir()
+        self.integration.root.symlink_to(checkout, target_is_directory=True)
+        self.integration.install()
+        linked = setup.Setup(checkout)
+        self.assertEqual(linked.root, self.integration.root)
+        before = linked.receipt.read_bytes()
+        self.commands.clear()
+        linked.execute('start')
+        self.assertEqual(linked.receipt.read_bytes(), before)
+        self.assertEqual(self.commands, [['systemctl', '--user', 'start', setup.UNIT, setup.LIFECYCLE_UNIT]])
+        (checkout / 'manifest.json').write_text('{"version":"edited"}')
+        self.commands.clear()
+        linked.execute('start')
+        self.assertIn(['systemctl', '--user', 'restart', setup.UNIT, setup.LIFECYCLE_UNIT], self.commands)
+        self.assertEqual(json.loads(linked.receipt.read_text())['root'], str(self.integration.root))
+        unit = (self.home / '.config/systemd/user' / setup.UNIT).read_text()
+        self.assertIn(str(self.integration.root), unit)
+
+    def test_different_checkout_cannot_take_over_installed_integration(self):
+        self.integration.root.mkdir()
+        self.integration.install()
+        other = self.home / 'other-checkout'
+        other.mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'different plugin location'):
+            setup.Setup(other).execute('start')
 
     def test_shell_start_upgrades_receipts_without_a_revision(self):
         self.integration.root.mkdir()

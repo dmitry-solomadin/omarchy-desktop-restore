@@ -138,6 +138,13 @@ class Setup:
         self.receipt = self.state / 'installation.json'
         self.bindings = self.config / 'hypr/bindings.lua'
         self.menu = self.config / 'omarchy/extensions/omarchy-menu.jsonc'
+        if self.receipt.exists():
+            installed = Path(json.loads(self.receipt.read_text())['root'])
+            if installed.is_dir() and installed.resolve() == self.root.resolve():
+                # A development checkout may be linked into the plugin folder.
+                # Keep integration paths and removal monitoring on that link,
+                # even when __file__ or the shell resolves to the checkout.
+                self.root = installed
 
     @contextmanager
     def lock(self):
@@ -202,11 +209,20 @@ class Setup:
                 if not isinstance(rows, list):
                     raise RuntimeError(f'Invalid {event} hooks in {path}')
                 group = {'hooks': [{'type': 'command', 'command': cmd, 'timeout': 1}]}
-                if group not in rows:
+                if self.agent_hook_group(rows, group) is None:
                     rows.append(group)
                 additions[event] = group
             result.append((path, json.dumps(config, indent=2) + '\n', additions))
         return result
+
+    @staticmethod
+    def agent_hook_group(rows, group):
+        """Find our unchanged commands even when a user adds a sibling hook."""
+        context = {key: value for key, value in group.items() if key != 'hooks'}
+        return next((row for row in rows if isinstance(row, dict)
+                     and {key: value for key, value in row.items() if key != 'hooks'} == context
+                     and isinstance(row.get('hooks'), list)
+                     and all(hook in row['hooks'] for hook in group['hooks'])), None)
 
     @staticmethod
     def remove_agent_hooks(current, item):
@@ -214,9 +230,13 @@ class Setup:
         hooks = config.get('hooks', {})
         for event, group in item['agent_hooks'].items():
             rows = hooks.get(event, [])
-            if group not in rows:
+            row = Setup.agent_hook_group(rows, group)
+            if row is None:
                 raise RuntimeError(f'Managed agent hook was edited in {item["path"]}')
-            rows.remove(group)
+            for hook in group['hooks']:
+                row['hooks'].remove(hook)
+            if not row['hooks']:
+                rows.remove(row)
             if not rows:
                 hooks.pop(event, None)
         if not hooks:
@@ -305,7 +325,8 @@ UMask=0077
                 raise RuntimeError(f'Agent hook definition changed in {path}; uninstall before updating.')
             elif path.exists():
                 current_hooks = json.loads(path.read_text()).get('hooks', {})
-                if any(group not in current_hooks.get(event, []) for event, group in hooks.items()):
+                if any(self.agent_hook_group(current_hooks.get(event, []), group) is None
+                       for event, group in hooks.items()):
                     raise RuntimeError(f'Managed agent hook was edited in {path}; preserve it before updating.')
             entry.update(after=text, agent_hooks=hooks)
             changes.append((path, text, entry['mode']))
