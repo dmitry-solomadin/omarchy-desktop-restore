@@ -129,6 +129,12 @@ def initialize():
             latest = protected
         if latest is not None:
             write_json(STATE / 'restore.json', latest)
+            restore_log.record(STATE, 'initialize-' + instance(), 'checkpoint_selected',
+                               checkpoint_saved=latest.get('saved'),
+                               checkpoint_instance=latest.get('instance'),
+                               windows=len(latest.get('windows', [])),
+                               classes=[w.get('class') for w in latest.get('windows', [])],
+                               selected_shutdown=latest == shutdown)
         write_json(STATE / 'instance.json', {'instance': instance(), 'recovery_started': False,
                                            'recovery_policy': recovery.POLICY})
 
@@ -471,11 +477,21 @@ def browser_flags(argv):
     return result
 
 
-def capture(fast=False, track_recovery=False):
+def capture(fast=False, track_recovery=False, on_event=None):
+    def event(name, **fields):
+        if on_event:
+            on_event(name, **fields)
+
+    event('capture_phase', phase='hypr_clients')
     clients = hypr('clients')
+    event('capture_clients', windows=[{'class': c.get('class'), 'mapped': c.get('mapped'),
+                                      'workspace': c.get('workspace', {}).get('name')}
+                                     for c in clients])
     if track_recovery:
         observe_recovery_windows(clients)
+    event('capture_phase', phase='processes')
     procs = processes()
+    event('capture_phase', phase='desktop_apps')
     apps = desktop_apps()
     session_cache = {}
 
@@ -506,12 +522,14 @@ def capture(fast=False, track_recovery=False):
         if isinstance(data, str):
             raise ValueError(data)
         return data
+    event('capture_phase', phase='monitors')
     monitors = {m['id']: m['name'] for m in hypr('monitors')}
     windows = []
     ambiguous = set()
     for c in sorted(clients, key=lambda c: (c['workspace']['id'], c['at'][0], c['at'][1])):
         if not c.get('mapped') or not c.get('class'):
             continue
+        event('capture_window', window_class=c['class'], workspace=c['workspace']['name'])
         ws = c['workspace']['name']
         if not ws.isdecimal() and not ws.startswith('special:'):
             ws = 'name:' + ws
@@ -564,6 +582,7 @@ def capture(fast=False, track_recovery=False):
         except (ValueError, KeyError) as error:
             w['error'] = str(error)
         windows.append(w)
+    event('capture_phase', phase='shared_agents')
     groups = []
     for pid in sorted({w['pid'] for w in windows if w['address'] in ambiguous}):
         siblings = [c for c in clients if c['pid'] == pid]
@@ -613,6 +632,12 @@ def save(snapshot, closed=False):
         write_json(STATE / 'latest.json', snapshot)
         if not (STATE / 'restore.json').exists():
             write_json(STATE / 'restore.json', snapshot)
+        restore_log.record(STATE, 'checkpoint-' + instance(), 'checkpoint_saved',
+                           checkpoint_saved=snapshot.get('saved'), closed=closed,
+                           windows=len(snapshot['windows']),
+                           classes=[w.get('class') for w in snapshot['windows']],
+                           errors=sum(bool(w.get('error')) for w in snapshot['windows']),
+                           restore_target_updated=bool(active))
         if expired:
             restore_log.record(STATE, 'recovery-' + instance(), 'recovery_timer_expired',
                                trigger=meta.get('recovery_trigger'), checkpoint_saved=snapshot.get('saved'))
@@ -661,30 +686,62 @@ def checkpoint_paused():
 
 def save_shutdown(if_shutting_down=False):
     """Best effort only; caller enforces a process-group-wide 700 ms KILL deadline."""
+    started = time.monotonic()
+    run_id = f'save-{time.time_ns():x}-{os.getpid()}'
+
+    def event(name, **fields):
+        restore_log.record(STATE, run_id, name,
+                           elapsed_ms=round((time.monotonic() - started) * 1000, 2), **fields)
+
+    event('shutdown_save_invoked', source='service_stop' if if_shutting_down else 'pre_power',
+          action=os.environ.get('DESKTOP_RESTORE_POWER_ACTION'), instance=instance())
+    try:
+        return _save_shutdown(if_shutting_down, event)
+    except BaseException as error:
+        event('shutdown_save_failed', error_type=type(error).__name__, error=str(error))
+        raise
+
+
+def _save_shutdown(if_shutting_down, event):
     protect_until = None if if_shutting_down else protect_shutdown()
     if if_shutting_down:
         if not preparing_for_shutdown():
+            event('shutdown_save_skipped', reason='not_shutting_down')
             return
         # The menu saved before closing windows. Never replace that with teardown.
         saved = read_json(STATE / 'shutdown.json', {})
         latest = read_json(STATE / 'latest.json', {})
         if saved.get('instance') == instance() and shutdown_precedes_teardown(saved, latest):
+            event('shutdown_save_skipped', reason='existing_shutdown_checkpoint',
+                  windows=len(saved.get('windows', [])), checkpoint_saved=saved.get('saved'))
             return
     # No initialization/rotation, waiting for locks, OpenCode requests, or notifications.
+    event('capture_phase', phase='acquire_locks')
     with lock('restore', blocking=False), lock('state', blocking=False):
-        snapshot = capture(fast=True)
+        event('capture_phase', phase='locks_acquired')
+        snapshot = capture(fast=True, on_event=event)
+        event('shutdown_capture_complete', windows=len(snapshot['windows']),
+              classes=[w.get('class') for w in snapshot['windows']],
+              errors=[{'class': w.get('class'), 'error': w['error']}
+                      for w in snapshot['windows'] if w.get('error')],
+              group_errors=[e for g in snapshot.get('agent_groups', []) for e in g['errors']])
         if not snapshot['windows']:
+            event('shutdown_save_skipped', reason='empty_desktop')
             return
         if any(('OC | ' in w['title'] or w.get('kind') == 'agent-unresolved') and w.get('error')
                and not w.get('agent_group') for w in snapshot['windows']):
+            event('shutdown_save_skipped', reason='unresolved_agent')
             return  # retain the previous checkpoint rather than losing conversations
         if any(group['errors'] for group in snapshot.get('agent_groups', [])):
+            event('shutdown_save_skipped', reason='agent_group_errors')
             return  # Placement uncertainty is fine; unknown session identities are not.
         if recovery_due(read_json(STATE / 'instance.json', {})):
             snapshot['recovery_grace_expired'] = True
         if protect_until is not None:
             snapshot['protect_until'] = protect_until
+        event('capture_phase', phase='write_checkpoint')
         write_json(STATE / 'shutdown.json', snapshot)
+        event('shutdown_save_completed', windows=len(snapshot['windows']), checkpoint_saved=snapshot['saved'])
 
 
 def identity(w):

@@ -7,7 +7,9 @@ esac
 
 # Resolve the helper locally; a missing/moved plugin still reaches Omarchy.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-/usr/bin/timeout --signal=KILL 0.7s python3 "$ROOT/lib/desktop_restore.py" save-shutdown \
-    </dev/null >/dev/null 2>&1 || :
+DESKTOP_RESTORE_POWER_ACTION="$action" /usr/bin/timeout --signal=KILL 0.7s python3 "$ROOT/lib/desktop_restore.py" save-shutdown \
+    </dev/null >/dev/null 2>&1
+save_status=$?
+logger -t desktop-restore -- "Pre-power save action=$action exit_status=$save_status (137=SIGKILL/timeout; see restore-events.jsonl for save outcome)" || :
 
 exec "${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-system-$action"

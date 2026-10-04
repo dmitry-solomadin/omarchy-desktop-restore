@@ -164,7 +164,8 @@ class RecoveryPolicyTests(unittest.TestCase):
         self.assertTrue(meta['recovery_started'])
         app.save(self.new)
         rows = [json.loads(line) for line in (self.state / 'restore-events.jsonl').read_text().splitlines()]
-        self.assertEqual([row['event'] for row in rows], ['recovery_timer_expired'])
+        self.assertEqual([row['event'] for row in rows],
+                         ['checkpoint_saved', 'recovery_timer_expired', 'checkpoint_saved'])
 
     def test_expiry_can_adopt_empty_desktop_after_first_window_was_closed(self):
         self.clock.return_value = 700
