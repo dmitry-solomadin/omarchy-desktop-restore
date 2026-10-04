@@ -19,6 +19,9 @@ class WebappTests(unittest.TestCase):
                          XDG_DATA_DIRS=str(self.root), XDG_CONFIG_HOME=str(self.root))
         env.start()
         self.addCleanup(env.stop)
+        instance = patch.object(app, 'instance', return_value='test-login')
+        instance.start()
+        self.addCleanup(instance.stop)
         self.window = {'class': 'chrome-discord.com__channels_@me-Default',
                        'title': '(20) Discord | a different channel', 'kind': 'app',
                        'error': 'No desktop launcher found for this application'}

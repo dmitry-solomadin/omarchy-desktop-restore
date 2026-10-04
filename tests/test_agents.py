@@ -217,7 +217,8 @@ class AgentTests(unittest.TestCase):
 
     def test_failed_agent_mapping_preserves_previous_shutdown_checkpoint(self):
         old = {'windows': [{'title': 'keep this'}]}
-        with patch.object(app, 'STATE', self.state):
+        with patch.object(app, 'STATE', self.state), \
+             patch.object(app, 'instance', return_value='test-login'):
             app.write_json(self.state / 'shutdown.json', old)
             with patch.object(app, 'capture', return_value={'windows': [
                     {'title': 'Claude Code', 'kind': 'agent-unresolved', 'error': 'No current hook'}]}):
