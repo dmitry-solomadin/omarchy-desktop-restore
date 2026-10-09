@@ -15,6 +15,7 @@ class RestoreTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         for mock in (patch.object(app, 'STATE', Path(self.temp.name)),
+                     patch.object(app.restore_log, 'enabled', return_value=True),
                      patch.object(app, 'instance', return_value='new-login'),
                      patch.object(app, 'report')):
             mock.start()
@@ -25,6 +26,17 @@ class RestoreTests(unittest.TestCase):
         self.actual = {**self.saved, 'address': 'new', 'pid': 2, 'title': 'startup',
                        'kind': 'agent-unresolved', 'workspace': {'name': '3'}, 'monitor': 0, 'mapped': True}
         self.snapshot = {'instance': 'old-login', 'windows': [self.saved]}
+
+    def test_disabled_diagnostics_restore_without_collecting_process_metadata(self):
+        with patch.object(app.restore_log, 'enabled', return_value=False), \
+             patch.object(app, 'capture', return_value={'windows': []}), \
+             patch.object(app, 'hypr', return_value=[]), patch.object(app, 'launch'), \
+             patch.object(app, 'wait_for_window', return_value=(self.actual, False)), \
+             patch.object(app, 'place'), patch.object(app.restore_diagnostics, 'registration') as register:
+            self.assertTrue(app.restore(self.snapshot))
+        register.assert_not_called()
+        self.assertEqual(app.read_json(app.STATE / 'restored-windows.json')['windows'],
+                         {self.saved['key']: {'address': self.actual['address'], 'pid': self.actual['pid']}})
 
     def test_placement_failure_does_not_duplicate_a_successful_launch_on_retry(self):
         with patch.object(app, 'capture', side_effect=[{'windows': []}, {'windows': [self.actual]}]), \
@@ -145,9 +157,13 @@ class RestoreTests(unittest.TestCase):
              patch.object(app, 'wait_for_window', side_effect=wait), patch.object(app, 'place'):
             self.assertTrue(app.restore({**self.snapshot, 'windows': windows}))
             progress = app.read_json(app.STATE / 'restored-windows.json')['windows']
-            self.assertEqual(progress, {w['key']: {'address': a['address'], 'pid': a['pid']}
-                                        for w, a in zip(windows, actual)})
+            self.assertEqual({key: {field: value[field] for field in ('address', 'pid')}
+                              for key, value in progress.items()},
+                             {w['key']: {'address': a['address'], 'pid': a['pid']}
+                              for w, a in zip(windows, actual)})
+            self.assertTrue(all(value.get('diagnostic') for value in progress.values()))
             self.assertTrue(app.restore({**self.snapshot, 'windows': windows}))
+            self.assertEqual(app.read_json(app.STATE / 'restored-windows.json')['windows'], progress)
         self.assertEqual(launch.call_count, 4)
         self.assertEqual(app.read_json(app.STATE / 'last-result.json')['already_open'], 4)
 

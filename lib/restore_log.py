@@ -1,13 +1,27 @@
 """Private restore invocation diagnostics; no keystrokes, argv or environments."""
 from datetime import datetime, timezone
 import fcntl
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
 import sys
 
 
+@lru_cache(maxsize=1)
+def enabled():
+    """Opt-in per-user diagnostics; restart the watcher after changing settings."""
+    config = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+    try:
+        settings = json.loads((config / 'desktop-restore/settings.json').read_text())
+        return isinstance(settings, dict) and settings.get('diagnostics') is True
+    except (OSError, ValueError):
+        return False
+
+
 def caller_chain():
+    if not enabled():
+        return []
     result, pid = [], os.getppid()
     for _ in range(8):
         if pid <= 0 or any(p['pid'] == pid for p in result):
@@ -25,6 +39,8 @@ def caller_chain():
 
 
 def record(state, run_id, event, **fields):
+    if not enabled():
+        return
     try:
         state.mkdir(parents=True, exist_ok=True, mode=0o700)
         row = {'time': datetime.now(timezone.utc).isoformat(), 'run_id': run_id,

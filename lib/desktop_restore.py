@@ -23,6 +23,7 @@ from terminals import TERMINALS, terminal_launch
 from window_events import WindowEvents
 from tiling import TiledOrder
 import restore_log
+import restore_diagnostics
 import recovery
 
 HOME = Path.home()
@@ -813,11 +814,19 @@ def launch(saved):
     # so later link clicks can activate the browser normally again.
     temporary = dict(rules) if saved.get('kind') == 'app' else {}
     arm_mapping_rule(saved, {**temporary, 'focus_on_activate': False})
-    cmd = shlex.join(['uwsm-app', '--'] + saved['launch'])
+    command = saved['launch']
+    diagnostic = None
+    if restore_log.enabled() and Path(command[0]).name == 'ghostty':
+        directory = STATE / 'ghostty-diagnostics' / f'{time.time_ns():x}-{os.getpid()}'
+        diagnostic = {'ghostty_log_directory': str(directory)}
+        command = [sys.executable, str(Path(__file__).resolve().with_name('ghostty_diagnostics.py')),
+                   str(directory), *command]
+    cmd = shlex.join(['uwsm-app', '--'] + command)
     fields = ', '.join(f'{key} = {lua(value)}' for key, value in rules.items())
     answer = run(['hyprctl', 'dispatch', f'hl.dsp.exec_cmd({lua(cmd)}, {{ {fields} }})'])
     if answer != 'ok':
         raise RuntimeError(answer)
+    return diagnostic
 
 
 def place(saved, actual):
@@ -912,6 +921,9 @@ def restore(snapshot, on_event=None):
                 if actual:
                     claimed.add(actual['address'])
                     mapping['windows'][saved['key']] = {k: actual[k] for k in ('address', 'pid')}
+                    if (restore_log.enabled() and remembered.get('diagnostic') and remembered.get('pid') == actual['pid']
+                            and remembered.get('address') == actual['address']):
+                        mapping['windows'][saved['key']]['diagnostic'] = remembered['diagnostic']
                     write_json(mapping_path, mapping)
                     # Do not move a window the user has already reopened or rearranged.
                     already += 1
@@ -930,13 +942,18 @@ def restore(snapshot, on_event=None):
                     w.get('browser_group') == saved['browser_group'] for w in live)
                 taken = set(claimed)
             try:
+                launch_diagnostic = None
                 before = {w['address'] for w in hypr('clients')}
                 group = saved.get('browser_group')
                 if not group or group not in launched_browsers:
                     if browser_open:
                         raise RuntimeError('Browser is already open; restore its missing windows from History')
-                    event('launch_requested', saved)
-                    launch(saved)
+                    event('launch_requested', saved,
+                          executable=shutil.which(saved['launch'][0]),
+                          terminal=saved.get('terminal'))
+                    launch_diagnostic = launch(saved)
+                    if isinstance(launch_diagnostic, dict):
+                        event('ghostty_diagnostics_started', saved, **launch_diagnostic)
                     if group:
                         launched_browsers[group] = before
                 before = launched_browsers.get(group, before)
@@ -947,11 +964,17 @@ def restore(snapshot, on_event=None):
                     # progress writes so simultaneous arrivals cannot lose records
                     # or race over write_json's per-process temporary file.
                     mapping['windows'][saved['key']] = {k: actual[k] for k in ('address', 'pid')}
+                    if restore_log.enabled():
+                        mapping['windows'][saved['key']]['diagnostic'] = restore_diagnostics.registration(saved, actual)
+                        if isinstance(launch_diagnostic, dict):
+                            mapping['windows'][saved['key']]['diagnostic'].update(launch_diagnostic)
                     write_json(mapping_path, mapping)
                     restored += 1
                     # Match later entries without another session API call.
                     live.append({**saved, 'address': actual['address'], 'pid': actual['pid']})
-                event('window_restored', saved, address=actual['address'], window_pid=actual['pid'])
+                event('window_restored', saved, address=actual['address'], window_pid=actual['pid'],
+                      **({'diagnostic': mapping['windows'][saved['key']]['diagnostic']}
+                         if restore_log.enabled() else {}))
                 if not moved:
                     place(saved, actual)
                 with progress_lock:
@@ -1002,10 +1025,15 @@ def signature(snapshot):
 def watch():
     """Save close events promptly; debounce other changes and exclude shutdown teardown."""
     with lock('watch', blocking=False), WindowEvents() as events:
+        diagnostics = restore_diagnostics.Observer(STATE) if restore_log.enabled() else None
         previous, changed = None, time.monotonic()
         closed = False
         while True:
             try:
+                if diagnostics is not None:
+                    mapping = read_json(STATE / 'restored-windows.json', {})
+                    if mapping.get('instance') == instance():
+                        diagnostics.poll(mapping, lambda: hypr('clients'))
                 if checkpoint_paused():
                     previous = None  # Never autosave a partially torn-down desktop.
                     closed = False

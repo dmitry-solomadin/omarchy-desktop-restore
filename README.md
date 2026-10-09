@@ -245,7 +245,33 @@ the previous checkpoint; placement uncertainty alone does not prevent saving.
 The last restore result, including skipped windows, errors and approximate-placement
 warnings, is recorded in `last-result.json`.
 
-Every restore invocation is also recorded in `restore-events.jsonl`: UTC timestamp,
+### Optional diagnostics
+
+Diagnostic tools are **disabled by default**. To enable them, set `diagnostics`
+to the JSON boolean `true` in
+`~/.config/desktop-restore/settings.json` (or
+`$XDG_CONFIG_HOME/desktop-restore/settings.json`):
+
+```json
+{
+  "diagnostics": true
+}
+```
+
+Restart the checkpoint service after changing the setting:
+
+```sh
+systemctl --user restart omarchy-desktop-restore.service
+```
+
+Set the flag to `false` and restart to disable diagnostics. The setting is local
+to your user and is not changed by plugin updates. When disabled, restores use
+the normal launcher without a diagnostic supervisor, event-log writes, caller
+inspection, or post-launch diagnostic polling. Checkpoints and `last-result.json`
+remain available. Already-running Ghostty supervisors finish when their window
+exits; changing the flag affects subsequent launches.
+
+When enabled, every restore invocation is recorded in `restore-events.jsonl`: UTC timestamp,
 run ID, shortcut/CLI source, parent-process IDs/names, checkpoint timestamp, per-window
 outcomes and total duration. Busy/rejected invocations and failures are logged too.
 The source tag identifies the shortcut command versus a normal CLI invocation; it
@@ -254,6 +280,45 @@ lists or environments. Watcher starts and unlocks do not invoke restoration.
 The same log records `recovery_timer_started` with the triggering window's class,
 address and PID, and `recovery_timer_expired` when the current desktop takes over.
 The deadline and initial window census are persisted in `instance.json`.
+
+Newly restored windows also carry a diagnostic ID, executable path and process
+start ticks. The checkpoint service observes them for two minutes, on its normal
+polls (at most ten seconds apart) and window events. `restored_window_observed`
+records changes in window presence and process liveness; process start ticks
+prevent a reused PID from looking like a surviving application. Window disappearance
+alone is not classified as a crash. After a disappearance, the service checks the
+current boot's journal for matching core-dump metadata, allowing another thirty
+seconds for delayed reports. `restored_process_coredump` includes the signal,
+executable and core-file path when available. Its run ID matches the diagnostic
+ID in the original `window_restored` event. No terminal output, core contents or
+process arguments are copied. Journal access failures or an absent core report
+do not establish a clean exit. This is diagnostic observation, not automatic retry.
+
+For a reported crash, inspect the recorded PID with `coredumpctl info <PID>`.
+The core itself remains managed by systemd's normal retention policy.
+
+**Ghostty-specific crash diagnostics:** restored Ghostty windows are launched
+through a small supervisor that enables native stderr logging (`GHOSTTY_LOG=stderr`).
+Each attempt has a private `ghostty-diagnostics/<attempt>/` directory in the state
+directory, linked from `ghostty_diagnostics_started` and `window_restored` events:
+
+- `runtime.log`: timestamped chunks of Ghostty's own messages, including startup,
+  renderer and I/O backend diagnostics, warnings and errors. The file is capped
+  at 4 MiB, keeping recent output when it fills. Logging lasts until Ghostty exits.
+- `metadata.json`: Ghostty's full `+version` build details, executable ELF build ID
+  when `readelf` is available, herdr version, kernel and boot ID, PID, and the exact
+  exit code or signal (such as `SIGSEGV`).
+
+These are native application logs, so they can include paths and other details
+Ghostty chooses to print; the terminal's PTY/conversation stream is not captured.
+Release Ghostty builds compile out debug-level messages: enabling stderr preserves
+the available info/warning/error messages, not a full terminal-parser trace.
+Attempt directories are retained for later comparison. The supervisor also
+records failures before a window maps, which window-only observation cannot see.
+The event log and the number of attempt directories have no automatic retention
+limit. Enabled Ghostty diagnostics use one Python supervisor per restored Ghostty
+window for its lifetime. Post-launch observation stops querying the compositor
+once all observation periods have expired.
 
 For background-service diagnostics:
 

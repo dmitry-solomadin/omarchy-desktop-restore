@@ -21,6 +21,7 @@ class RecoveryLifecycleTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name)
         for mock in (patch.object(app, 'STATE', self.state),
+                     patch.object(restore_log, 'enabled', return_value=True),
                      patch.object(app, 'instance', return_value='current'), patch.object(app, 'report')):
             mock.start()
             self.addCleanup(mock.stop)
