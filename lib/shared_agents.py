@@ -40,6 +40,10 @@ def capture_group(siblings, slots, procs, state, exact, identity, resolve_openco
         try:
             agent = terminal_agent(siblings[0], procs, state, root=root)
             if agent:
+                if agent['kind'] == 'herdr':
+                    # Several visible clients may attach to one persistent
+                    # session. Preserve each window, not just the server name.
+                    agent['key'] = key + '-herdr-' + str(root)
                 (opencode if agent['kind'] in ('opencode', 'opencode1') else native).append(agent)
         except (ValueError, OSError) as error:
             group['errors'].append(f'Shell {root}: {error}')
@@ -59,6 +63,10 @@ def capture_group(siblings, slots, procs, state, exact, identity, resolve_openco
     known = {identity(w) for w in exact if w.get('session') and not w.get('error')}
     candidates, conflicts = {}, set()
     for session in native:
+        if session['kind'] == 'herdr':
+            # Reliably mapped branches were already excluded above.
+            group['sessions'].append(session)
+            continue
         ident = identity(session)
         if ident in known:
             continue
@@ -82,12 +90,15 @@ def capture_group(siblings, slots, procs, state, exact, identity, resolve_openco
 
 
 def deduplicate_groups(groups, identity):
-    """One fallback entry per conversation, including across terminal processes."""
+    """One entry per conversation, or per Herdr client, across terminal processes."""
     owners = {}
+    keep = set()
     for group in groups:
         for session in group['sessions']:
+            if session['kind'] == 'herdr':
+                keep.add(session['key'])
+                continue
             owners.setdefault(identity(session), []).append((group, session))
-    keep = set()
     for copies in owners.values():
         settings = {json.dumps([s['argv'], s['cwd']]) for _, s in copies}
         if len(settings) == 1:

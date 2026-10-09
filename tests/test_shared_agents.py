@@ -202,6 +202,62 @@ class SharedAgentsTests(unittest.TestCase):
         herdr = next(s for s in group['sessions'] if s['kind'] == 'herdr')
         self.assertEqual(herdr['argv'], ['herdr', '--session', 'named'])
 
+    def test_herdr_clients_of_same_session_keep_both_windows(self):
+        for pid in (21, 22):
+            self.procs[pid]['cmd'] = ['herdr']
+        snapshot = app.capture()
+        entries = restore_entries(snapshot)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual({e['session'] for e in entries}, {'default'})
+        self.assertEqual(len({e['key'] for e in entries}), 2)
+        self.assertEqual({e['workspace'] for e in entries}, {'1', '2'})
+        self.assertEqual(app.capture(fast=True)['agent_groups'], snapshot['agent_groups'])
+        claimed = set()
+        for saved in entries:
+            actual = app.existing_window(saved, entries, claimed)
+            self.assertIsNotNone(actual)
+            claimed.add(actual['address'])
+        self.assertEqual(len(claimed), 2)
+        # Repeated restore must recognize both already-open clients.
+        with patch.object(app, 'capture', return_value=snapshot), patch.object(app, 'launch') as launch:
+            self.assertTrue(app.restore(snapshot))
+        launch.assert_not_called()
+        self.assertEqual(app.read_json(self.state / 'last-result.json')['already_open'], 2)
+
+    def test_herdr_clients_across_terminal_processes_are_not_merged(self):
+        for pid in (21, 22):
+            self.procs[pid]['cmd'] = ['herdr', '--session', 'work']
+        self.second_group()
+        entries = restore_entries(app.capture())
+        self.assertEqual(len(entries), 4)
+        self.assertEqual(len({e['key'] for e in entries}), 4)
+
+    def test_restore_launches_each_herdr_client_of_same_session(self):
+        for pid in (21, 22):
+            self.procs[pid]['cmd'] = ['herdr']
+        snapshot = app.capture()
+        actual = [{**entry, 'address': f'new-{i}', 'pid': 100 + i}
+                  for i, entry in enumerate(restore_entries(snapshot))]
+        with patch.object(app, 'capture', return_value={'windows': []}), \
+             patch.object(app, 'launch') as launch, patch.object(app, 'place'), \
+             patch.object(app, 'wait_for_window', side_effect=[(w, False) for w in actual]):
+            self.assertTrue(app.restore(snapshot))
+        self.assertEqual(launch.call_count, 2)
+        self.assertEqual(app.read_json(self.state / 'last-result.json')['restored'], 2)
+
+    def test_exact_herdr_window_does_not_suppress_other_clients(self):
+        for pid in (21, 22):
+            self.procs[pid]['cmd'] = ['herdr']
+        self.add_window(3, ['herdr'])
+        path = self.state / 'unique'
+        path.mkdir()
+        self.windows[0]['title'] = str(path)
+        self.procs[11]['cwd'] = str(path)
+        snapshot = app.capture()
+        self.assertNotIn('agent_group', snapshot['windows'][0])
+        self.assertEqual(len(snapshot['agent_groups'][0]['sessions']), 2)
+        self.assertEqual(len(restore_entries(snapshot)), 3)
+
     def test_codex_frontend_uses_app_server_hook_and_keeps_profile(self):
         self.procs[30] = self.proc(22, ['codex', 'app-server'], 2)
         self.hook(30, 'codex', 'server-session-123')
