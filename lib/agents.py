@@ -8,7 +8,8 @@ import sys
 import time
 
 KINDS = {'codex', 'claude', 'herdr'}
-OPENCODE = {'opencode': 'opencode1', 'opencode2': 'opencode'}
+OPENCODE = {'opencode': 'opencode1', 'opencode2': 'opencode',
+            'opencode.exe': 'opencode', 'opencode2.exe': 'opencode'}
 SESSION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{7,127}\Z')
 BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
@@ -26,8 +27,13 @@ class AgentIdentityError(ValueError):
 def read_process(pid, root=Path('/proc')):
     path = root / str(pid)
     stat = (path / 'stat').read_text().rsplit(')', 1)[1].split()
+    try:
+        executable = os.readlink(path / 'exe').removesuffix(' (deleted)')
+    except OSError:
+        executable = ''
     return {'parent': int(stat[1]), 'start': stat[19], 'tty': int(stat[4]),
             'pgrp': int(stat[2]), 'tpgid': int(stat[5]),
+            'exe': executable,
             'cmd': [x.decode(errors='replace') for x in (path / 'cmdline').read_bytes().split(b'\0') if x],
             'cwd': os.readlink(path / 'cwd')}
 
@@ -38,6 +44,11 @@ def command(proc):
         return None
     name = Path(argv[0]).name
     if name in OPENCODE:
+        # The official V2 npm launcher is named opencode, but its native
+        # executable (also on Linux) is opencode.exe. Inspect the running
+        # process so replacing a launcher does not reclassify an old client.
+        if Path(proc.get('exe', '')).name in ('opencode.exe', 'opencode2.exe'):
+            return 'opencode', argv[1:]
         return OPENCODE[name], argv[1:]
     if name in KINDS:
         return name, argv[1:]

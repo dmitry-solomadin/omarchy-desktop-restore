@@ -191,14 +191,43 @@ def terminal_cwd(window, procs):
     raise ValueError('Cannot identify this terminal window’s working directory')
 
 
+def opencode_binary():
+    """Prefer the released V2 launcher while retaining preview installations."""
+    binary = shutil.which('opencode')
+    if binary and Path(binary).resolve().name in ('opencode.exe', 'opencode2.exe'):
+        return 'opencode'
+    return 'opencode2' if shutil.which('opencode2') else 'opencode'
+
+
+def opencode_query_binary():
+    """Use the running service's CLI during an in-place preview upgrade.
+
+    A newer CLI can replace an incompatible daemon. Checkpointing must not
+    interrupt its live sessions merely because the installed binary changed.
+    /proc keeps its executable available even after package removal.
+    """
+    state = Path(os.environ.get('XDG_STATE_HOME', HOME / '.local/state'))
+    try:
+        service = read_json(state / 'opencode/service.json', {})
+        pid = int(service['pid'])
+        proc = read_process(pid)
+        if ('serve' in proc['cmd'] and '--service' in proc['cmd']
+                and Path(proc['exe']).name in ('opencode.exe', 'opencode2.exe')):
+            return f'/proc/{pid}/exe'
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return opencode_binary()
+
+
 def sessions(env=None):
     result, cursor = [], None
+    binary = opencode_query_binary()
     for _ in range(50):
         query = {'limit': 100}
         if cursor:
             query['cursor'] = cursor
         page = json.loads(run(with_env(
-            ['opencode2', 'api', 'get', '/api/session?' + urllib.parse.urlencode(query)], env), 20))
+            [binary, 'api', 'get', '/api/session?' + urllib.parse.urlencode(query)], env), 20))
         result.extend(page['data'])
         cursor = (page.get('cursor') or {}).get('next')
         if not cursor or not page['data']:
@@ -273,7 +302,7 @@ def sessions_v1(cwd, env):
 def opencode_window(title, agent, available):
     kind, cwd = agent['kind'], agent['cwd']
     args, env = agent['opencode_args'], agent['agent_env']
-    binary = 'opencode' if kind == 'opencode1' else 'opencode2'
+    binary = 'opencode' if kind == 'opencode1' else opencode_binary()
     if 'OC | ' in title:
         session = session_for_title(title, available)
         if not valid_session(session.get('id'), session.get('location', {}).get('directory')):
@@ -803,6 +832,24 @@ def arm_mapping_rule(saved, rules):
         raise RuntimeError(answer)
 
 
+def launch_command(saved):
+    command = list(saved['launch'])
+    argv = saved.get('argv', [])
+    if saved.get('kind') not in ('opencode', 'opencode-home') or not argv:
+        return command
+    # Older checkpoints include the preview name, possibly behind env. Only
+    # rewrite the executable in the exact argv suffix, never a title or path.
+    index = 0
+    if argv[0] == 'env':
+        index = 1
+        while index < len(argv) and '=' in argv[index]:
+            index += 1
+    if (index < len(argv) and Path(argv[index]).name == 'opencode2'
+            and command[-len(argv):] == argv):
+        command[len(command) - len(argv) + index] = opencode_binary()
+    return command
+
+
 def launch(saved):
     # Rules are attached to the launch token, before the first window maps.
     # uwsm forwards that token even though the app is launched by systemd.
@@ -814,7 +861,7 @@ def launch(saved):
     # so later link clicks can activate the browser normally again.
     temporary = dict(rules) if saved.get('kind') == 'app' else {}
     arm_mapping_rule(saved, {**temporary, 'focus_on_activate': False})
-    command = saved['launch']
+    command = launch_command(saved)
     diagnostic = None
     if restore_log.enabled() and Path(command[0]).name == 'ghostty':
         directory = STATE / 'ghostty-diagnostics' / f'{time.time_ns():x}-{os.getpid()}'

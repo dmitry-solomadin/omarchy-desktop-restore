@@ -16,6 +16,10 @@ class OpenCodeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name)
+        self.bin = self.state / 'bin'
+        self.bin.mkdir()
+        preview = self.bin / 'opencode2'
+        preview.touch(mode=0o700)
         self.client = {'pid': 10, 'class': 'foot', 'title': 'OC | Same title', 'address': 'test',
                        'workspace': {'id': 3, 'name': '3'}, 'at': [0, 0], 'size': [500, 500],
                        'floating': False, 'fullscreen': 0, 'mapped': True, 'monitor': 0}
@@ -32,12 +36,38 @@ class OpenCodeTests(unittest.TestCase):
                                   [self.client] if query == 'clients' else [{'id': 0, 'name': 'DP-1'}]),
                      patch.object(app, 'processes', return_value=self.procs),
                      patch.object(app, 'desktop_apps', return_value={}),
-                     patch.object(agents, 'process_env', return_value={})):
+                     patch.object(agents, 'process_env', return_value={}),
+                     patch.dict(os.environ, {'PATH': str(self.bin),
+                                             'XDG_STATE_HOME': str(self.state / 'xdg-state')})):
             mock.start()
             self.addCleanup(mock.stop)
 
     def capture(self, fast=False):
         return app.capture(fast=fast)['windows'][0]
+
+    def install_released_launcher(self):
+        native = self.state / 'npm/bin/opencode.exe'
+        native.parent.mkdir(parents=True)
+        native.touch(mode=0o700)
+        (self.bin / 'opencode').symlink_to(native)
+        return native
+
+    def test_fresh_opencode2_only_install_captures_and_launches_exact_session(self):
+        self.procs[12]['cmd'] = ['opencode2', '--auto']
+        with patch.object(app, 'run', return_value=json.dumps({'data': self.v2})) as run:
+            saved = self.capture()
+        run.assert_called_once_with(['opencode2', 'api', 'get', '/api/session?limit=100'], 20)
+        self.assertEqual(saved['kind'], 'opencode')
+        self.assertEqual(saved['argv'], ['opencode2', '--auto', '--session', 'ses_exact_v2', self.temp.name])
+        self.assertEqual(self.capture(fast=True)['session'], saved['session'])
+        with patch.object(app, 'arm_mapping_rule'), patch.object(app, 'run', return_value='ok') as run:
+            app.launch(saved)
+        self.assertIn('opencode2 --auto --session ses_exact_v2', run.call_args.args[0][-1])
+
+    def test_preview_launcher_is_kept_when_opencode_is_v1(self):
+        (self.bin / 'opencode').touch(mode=0o700)
+        self.assertEqual(app.opencode_binary(), 'opencode2')
+        self.assertEqual(app.opencode_query_binary(), 'opencode2')
 
     def test_versions_have_separate_metadata_commands_and_identities(self):
         with patch.object(app, 'sessions_v1', return_value=self.v1) as v1, \
@@ -52,6 +82,74 @@ class OpenCodeTests(unittest.TestCase):
         self.assertEqual(second['argv'], ['opencode2', '--auto', '--session', 'ses_exact_v2', self.temp.name])
         self.assertNotEqual(app.identity(first), app.identity({**second, 'session': first['session']}))
         self.assertEqual(len(list(self.state.glob('sessions*.json'))), 2)
+
+    def test_released_npm_client_uses_v2_metadata_and_canonical_launcher(self):
+        self.procs[12]['exe'] = str(self.install_released_launcher())
+        with patch.object(app, 'run', return_value=json.dumps({'data': self.v2})) as run:
+            saved = self.capture()
+        run.assert_called_once_with(['opencode', 'api', 'get', '/api/session?limit=100'], 20)
+        self.assertEqual(saved['kind'], 'opencode')
+        self.assertEqual(saved['argv'], ['opencode', '--session', 'ses_exact_v2', self.temp.name])
+
+    def test_replacing_launcher_does_not_reclassify_running_v1(self):
+        self.install_released_launcher()
+        self.procs[12]['exe'] = '/old/bin/opencode'
+        with patch.object(app, 'sessions_v1', return_value=self.v1):
+            self.assertEqual(self.capture()['kind'], 'opencode1')
+
+    def test_preview_alias_is_classified_from_its_running_executable(self):
+        self.procs[12]['exe'] = '/old/cli/bin/opencode2.exe'
+        with patch.object(app, 'sessions', return_value=self.v2):
+            self.assertEqual(self.capture()['kind'], 'opencode')
+
+    def test_old_checkpoint_launch_is_migrated_without_mutating_snapshot(self):
+        self.install_released_launcher()
+        argv = ['env', 'XDG_DATA_HOME=/data', '/home/test/.local/bin/opencode2',
+                '--session', 'ses_exact_v2', '/work/opencode2']
+        saved = {'kind': 'opencode', 'argv': argv, 'launch': ['foot', '-e', *argv]}
+        command = app.launch_command(saved)
+        self.assertEqual(command, ['foot', '-e', 'env', 'XDG_DATA_HOME=/data',
+                                  'opencode', '--session', 'ses_exact_v2', '/work/opencode2'])
+        self.assertEqual(saved['launch'], ['foot', '-e', *argv])
+
+    def test_home_checkpoint_is_migrated_but_v1_and_non_executable_arguments_are_preserved(self):
+        self.install_released_launcher()
+        home = {'kind': 'opencode-home', 'argv': ['opencode2', '/work'],
+                'launch': ['foot', '-e', 'opencode2', '/work']}
+        self.assertEqual(app.launch_command(home), ['foot', '-e', 'opencode', '/work'])
+        for saved in (
+                {'kind': 'opencode1', 'argv': ['opencode', '/work'],
+                 'launch': ['foot', '-e', 'opencode', '/work']},
+                {'kind': 'opencode', 'argv': ['opencode2', '/work'],
+                 'launch': ['foot', '--title', 'opencode2', '-e', 'custom-launcher', '/work']}):
+            with self.subTest(saved=saved):
+                self.assertEqual(app.launch_command(saved), saved['launch'])
+
+    def test_session_query_uses_running_service_binary_across_pages(self):
+        self.install_released_launcher()
+        app.write_json(Path(os.environ['XDG_STATE_HOME']) / 'opencode/service.json', {'pid': 123})
+        proc = {'cmd': ['/old/bin/opencode2.exe', 'serve', '--service'], 'exe': '/old/bin/opencode2.exe'}
+        pages = [{'data': self.v2, 'cursor': {'next': 'next-page'}}, {'data': []}]
+        with patch.object(app, 'read_process', return_value=proc), \
+             patch.object(app, 'run', side_effect=[json.dumps(page) for page in pages]) as run:
+            self.assertEqual(app.sessions(), self.v2)
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ['/proc/123/exe', 'api', 'get', '/api/session?limit=100'],
+            ['/proc/123/exe', 'api', 'get', '/api/session?limit=100&cursor=next-page']])
+
+    def test_invalid_or_stale_service_registration_falls_back_to_installed_cli(self):
+        registration = Path(os.environ['XDG_STATE_HOME']) / 'opencode/service.json'
+        registration.parent.mkdir(parents=True)
+        for text in ('invalid', 'null', '[]', '{}', '{"pid":"invalid"}', '{"pid":123}'):
+            with self.subTest(text=text), patch.object(app, 'read_process', side_effect=ProcessLookupError):
+                registration.write_text(text)
+                self.assertEqual(app.opencode_query_binary(), 'opencode2')
+        registration.write_text('{"pid":123}')
+        for proc in ({'cmd': ['other', 'serve', '--service'], 'exe': '/bin/other'},
+                     {'cmd': ['opencode2', 'serve'], 'exe': '/bin/opencode2.exe'},
+                     {'cmd': ['opencode2', '--service'], 'exe': '/bin/opencode2.exe'}):
+            with self.subTest(proc=proc), patch.object(app, 'read_process', return_value=proc):
+                self.assertEqual(app.opencode_query_binary(), 'opencode2')
 
     def test_shutdown_uses_only_the_correct_version_cache(self):
         app.write_json(self.state / 'sessions-cache.json', self.v2)
