@@ -49,7 +49,7 @@ class SetupTests(unittest.TestCase):
         self.integration.install()
         menu = setup.parse_jsonc(self.integration.menu.read_text())
         self.assertIn("'", menu['system.reboot']['action'])
-        self.assertIn('exec omarchy-system-reboot', menu['system.reboot']['action'])
+        self.assertIn('exec omarchy-system reboot', menu['system.reboot']['action'])
         self.assertIn('personal', menu)
         self.assertEqual(self.integration.menu.stat().st_mode & 0o777, 0o644)
         unit = (self.home / '.config/systemd/user' / setup.UNIT).read_text()
