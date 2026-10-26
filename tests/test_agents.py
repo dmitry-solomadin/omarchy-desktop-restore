@@ -249,6 +249,36 @@ class AgentTests(unittest.TestCase):
         self.assertIn('resume', saved['launch'])
         self.assertNotIn('error', saved)
 
+    def test_agy_resumes_exact_presence_lock_session_with_options(self):
+        self.procs[12] = proc(
+            11,
+            ['agy', '--dangerously-skip-permissions', '--model', 'gemini-4', '--conversation', 'stale-id'],
+            session='788e0022-8401-4c76-984f-8d2035c70d07',
+        )
+        saved = agents.terminal_agent(self.window, self.procs, self.state)
+        self.assertEqual(saved['kind'], 'agy')
+        self.assertEqual(saved['session'], '788e0022-8401-4c76-984f-8d2035c70d07')
+        self.assertEqual(
+            saved['argv'],
+            ['agy', '--conversation', '788e0022-8401-4c76-984f-8d2035c70d07',
+             '--dangerously-skip-permissions', '--model', 'gemini-4'],
+        )
+        self.assertEqual(saved['cwd'], '/work')
+
+    def test_agy_print_and_subcommands_are_not_interactive_sessions(self):
+        for cmd in (['agy', '--print', 'hello'], ['agy', '-p', 'hello'], ['agy', 'mcp', 'list']):
+            self.procs[12] = proc(11, cmd, session='788e0022-8401-4c76-984f-8d2035c70d07')
+            self.assertIsNone(agents.terminal_agent(self.window, self.procs, self.state))
+
+    def test_agy_reads_presence_lock_from_proc_fd(self):
+        fd_dir = self.state / '12' / 'fd'
+        fd_dir.mkdir(parents=True)
+        lock_target = self.state / 'presence' / 'bd68dfb2-2222-439e-b16d-d09869976609.lock'
+        (fd_dir / '9').symlink_to(lock_target)
+        session, cwd = agents.agy_session(12, {'cwd': '/work'}, root=self.state)
+        self.assertEqual(session, 'bd68dfb2-2222-439e-b16d-d09869976609')
+        self.assertEqual(cwd, '/work')
+
 
 if __name__ == '__main__':
     unittest.main()

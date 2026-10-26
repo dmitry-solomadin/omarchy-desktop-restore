@@ -47,7 +47,7 @@ def capture_group(siblings, slots, procs, state, exact, identity, resolve_openco
                 (opencode if agent['kind'] in ('opencode', 'opencode1') else native).append(agent)
         except (ValueError, OSError) as error:
             group['errors'].append(f'Shell {root}: {error}')
-            if getattr(error, 'kind', None) not in ('claude', 'codex', 'herdr'):
+            if getattr(error, 'kind', None) not in ('claude', 'codex', 'herdr', 'agy'):
                 unknown_opencode = True
     if opencode and unknown_opencode:
         group['errors'].append('Cannot assign OpenCode titles while another local client/context is unidentified')
