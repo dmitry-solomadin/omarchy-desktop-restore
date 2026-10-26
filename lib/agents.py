@@ -7,9 +7,11 @@ import re
 import sys
 import time
 
-KINDS = {'codex', 'claude', 'herdr'}
+KINDS = {'codex', 'claude', 'herdr', 'agy', 'antigravity'}
 OPENCODE = {'opencode': 'opencode1', 'opencode2': 'opencode',
             'opencode.exe': 'opencode', 'opencode2.exe': 'opencode'}
+AGY_SUBCOMMANDS = {'agent', 'agents', 'changelog', 'help', 'install', 'mcp',
+                   'mic-serve', 'models', 'plugin', 'plugins', 'remote-control', 'update'}
 SESSION_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{7,127}\Z')
 BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
@@ -51,7 +53,7 @@ def command(proc):
             return 'opencode', argv[1:]
         return OPENCODE[name], argv[1:]
     if name in KINDS:
-        return name, argv[1:]
+        return ('agy' if name == 'antigravity' else name), argv[1:]
     if name in ('node', 'nodejs', 'bun') and len(argv) > 1:
         script = argv[1]
         if '/@openai/codex/' in script and script.endswith('/codex.js'):
@@ -222,6 +224,39 @@ def codex_mode(args):
         '-i', '--image', '--local-provider', '--add-dir', '--remote', '--remote-auth-token-env'})
 
 
+def agy_mode(args):
+    return first_positional(args, {
+        '--add-dir', '--agent', '--conversation', '--effort', '-i', '--prompt-interactive',
+        '--input-format', '--json-schema', '--log-file', '--mode', '--model',
+        '--output-format', '-p', '--print', '--prompt', '--print-timeout', '--project'})
+
+
+def agy_session(pid, proc, root=Path('/proc')):
+    if 'session' in proc:
+        session = proc['session']
+        if not valid_session(session, proc['cwd']):
+            raise ValueError('Invalid agy session record')
+        return session, proc['cwd']
+    sessions = set()
+    try:
+        for fd in (root / str(pid) / 'fd').iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if '/presence/' in target and target.endswith('.lock'):
+                session = Path(target).stem
+                if valid_session(session, proc['cwd']):
+                    sessions.add(session)
+    except OSError as error:
+        raise ValueError('Cannot inspect agy process file descriptors') from error
+    if not sessions:
+        raise ValueError('No active agy presence lock found for this session')
+    if len(sessions) != 1:
+        raise ValueError('Multiple agy presence locks found for this terminal')
+    return sessions.pop(), proc['cwd']
+
+
 def terminal_roots(pid, procs):
     return {child: proc for child, proc in procs.items()
             if proc['parent'] == pid and proc.get('tty')}
@@ -285,6 +320,10 @@ def terminal_agent(window, procs, state, shared=False, siblings=None, root=None)
             continue
         if kind == 'claude' and any(a in ('-p', '--print', '--background', '--bg') for a in args):
             continue
+        if kind == 'agy' and (
+                agy_mode(args) in AGY_SUBCOMMANDS
+                or any(a in ('-p', '--print', '--prompt') or a.startswith(('--print=', '--prompt=')) for a in args)):
+            continue
         if not proc.get('tty') or proc.get('pgrp') != proc.get('tpgid'):
             continue
         if proc['tty'] not in terminal_ttys:
@@ -335,6 +374,13 @@ def agent_session(pid, kind, args, procs, state):
         argv = ['herdr', '--session', session]
         cwd = proc['cwd']
         env = {k: v for k, v in env.items() if k in ('HERDR_CONFIG_PATH', 'XDG_CONFIG_HOME')}
+    elif kind == 'agy':
+        session, cwd = agy_session(pid, proc)
+        argv = ['agy', '--conversation', session] + options(
+            args,
+            {'--model', '--mode', '--agent', '--effort', '--project', '--add-dir'},
+            {'--dangerously-skip-permissions', '--sandbox', '--remote-control'})
+        env = {}
     else:
         if kind == 'codex' and any(a == '--remote' or a.startswith('--remote=') for a in args):
             raise ValueError('Remote Codex sessions are not supported')
