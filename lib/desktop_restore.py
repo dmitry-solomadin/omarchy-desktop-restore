@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from agents import read_process, terminal_agent, valid_session, options, SharedWindowAmbiguity
+from agents import read_process, terminal_agent, terminal_branch, valid_session, options, SharedWindowAmbiguity
 from shared_agents import capture_group, deduplicate_groups, restore_entries
 from terminals import TERMINALS, terminal_launch
 from window_events import WindowEvents
@@ -177,7 +177,7 @@ def children(pid, procs):
     return [p for p in procs.values() if p['parent'] == pid]
 
 
-def terminal_cwd(window, procs):
+def terminal_cwd(window, procs, siblings=None):
     # Ghostty's GTK single-instance process can own several independent shells.
     # Its shell-integration title identifies a window, whereas the GUI PID cannot.
     title = window['title']
@@ -188,6 +188,17 @@ def terminal_cwd(window, procs):
               if Path(p['cmd'][0]).name in SHELLS]
     if len(shells) == 1 and Path(shells[0]['cwd']).is_dir():
         return shells[0]['cwd']
+    if siblings and len(siblings) > 1:
+        try:
+            branch_pid = terminal_branch(window, procs, siblings)
+            cwd = procs.get(branch_pid, {}).get('cwd', '')
+            if cwd and Path(cwd).is_dir():
+                return cwd
+        except ValueError:
+            pass
+    cwds = {p['cwd'] for p in shells if Path(p['cwd']).is_dir()}
+    if len(cwds) == 1 and (not siblings or len(shells) == len(siblings)):
+        return cwds.pop()
     raise ValueError('Cannot identify this terminal window’s working directory')
 
 
@@ -594,7 +605,7 @@ def capture(fast=False, track_recovery=False, on_event=None):
                     w['kind'] = 'agent-unresolved'
                     raise ValueError('Cannot identify the visible local OpenCode process and version')
                 else:
-                    w['cwd'] = terminal_cwd(c, procs)
+                    w['cwd'] = terminal_cwd(c, procs, siblings=[other for other in clients if other['pid'] == c['pid']])
                     w['argv'] = []
                 w['terminal'] = executable
                 w['launch'] = terminal_launch(executable, c, w['cwd'], w['argv'])
@@ -777,7 +788,7 @@ def _save_shutdown(if_shutting_down, event):
 def identity(w):
     if w['kind'] == 'browser':
         return ('browser', w['class'], w.get('browser_group'))
-    if w['kind'] in ('codex', 'claude', 'herdr', 'opencode1'):
+    if w['kind'] in ('codex', 'claude', 'herdr', 'opencode1', 'agy'):
         session = w.get('session') or ('default' if w['kind'] == 'herdr' else None)
         return (w['kind'], session, tuple(sorted(w.get('agent_env', {}).items())))
     if w['kind'] == 'opencode':
