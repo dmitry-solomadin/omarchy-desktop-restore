@@ -199,6 +199,7 @@ app.save_shutdown()
                     root = Path(directory)
                     # Replace BOTH power binaries before executing any copy. No real power action in tests.
                     safe_source = source.replace('${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-system-', str(root / 'power-'))
+                    safe_source = safe_source.replace('${OMARCHY_PATH:-/usr/share/omarchy}/bin/omarchy-system" "$action"', str(root / ('power-' + action)) + '"')
                     safe_source = safe_source.replace('0.7s python3', '0.7s ' + str(root / 'saver'))
                     (root / 'wrapper').write_text(safe_source)
                     (root / 'saver').write_text(saver)

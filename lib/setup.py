@@ -80,7 +80,7 @@ def menu_block(text, wrapper):
     for action in ('reboot', 'shutdown'):
         path = shlex.quote(str(wrapper))
         # A plugin removed before uninstall cannot break the power menu.
-        command = f'if [ -x {path} ]; then exec {path} {action}; fi; exec omarchy-system-{action}'
+        command = f'if [ -x {path} ]; then exec {path} {action}; fi; exec omarchy-system {action}'
         icon, label = ('󰜉', 'Reboot') if action == 'reboot' else ('󰐥', 'Shutdown')
         rows.append('  ' + json.dumps('system.' + action) + ': ' +
                     json.dumps({'icon': icon, 'label': label, 'action': command}, ensure_ascii=False) + ',\n')
