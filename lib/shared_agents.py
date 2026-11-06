@@ -147,7 +147,10 @@ def restore_entries(snapshot):
             entry.update(session, address='group-session:' + session['key'], pid=group['pid'],
                          placement='title-matched' if matched else 'approximate',
                          agent_group=group['key'], terminal=group['terminal'])
-            entry['title'] = slot['title'] if matched else session.get('title', f"{session['kind']}: {session['session']}")
+            # A Herdr client's title names its workspace, which belongs with this
+            # slot's placement. Other agents' slot titles may be another conversation's.
+            keep_slot_title = matched or session['kind'] == 'herdr'
+            entry['title'] = slot['title'] if keep_slot_title else session.get('title', f"{session['kind']}: {session['session']}")
             entry['launch'] = terminal_launch(group['terminal'], slot, session['cwd'], session['argv'])
             entries.append(entry)
     return entries

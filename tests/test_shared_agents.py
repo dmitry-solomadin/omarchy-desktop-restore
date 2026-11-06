@@ -33,6 +33,9 @@ class SharedAgentsTests(unittest.TestCase):
                      patch.object(app, 'processes', side_effect=lambda: copy.deepcopy(self.procs)),
                      patch.object(app, 'desktop_apps', return_value={}),
                      patch.object(agents, 'process_env', return_value={}),
+                     # A restored Herdr window must never reach a real session's socket.
+                     patch.object(app.herdr_workspace, 'select',
+                                  side_effect=app.herdr_workspace.Unavailable('no Herdr in tests')),
                      patch.object(app, 'report')):
             mock.start()
             self.addCleanup(mock.stop)
@@ -223,6 +226,13 @@ class SharedAgentsTests(unittest.TestCase):
             self.assertTrue(app.restore(snapshot))
         launch.assert_not_called()
         self.assertEqual(app.read_json(self.state / 'last-result.json')['already_open'], 2)
+
+    def test_herdr_client_keeps_its_slots_title_for_workspace_selection(self):
+        for pid, title, window in zip((21, 22), ('host: mix', 'host: ~Game'), self.windows):
+            self.procs[pid]['cmd'] = ['herdr']
+            window['title'] = title
+        entries = restore_entries(app.capture())
+        self.assertEqual({e['workspace']: e['title'] for e in entries}, {'1': 'host: mix', '2': 'host: ~Game'})
 
     def test_herdr_clients_across_terminal_processes_are_not_merged(self):
         for pid in (21, 22):

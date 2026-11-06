@@ -73,6 +73,17 @@ responses. Missing, stale or ambiguous records are skipped.
 Restores default and named sessions. Agent conversations inside panes use herdr's
 native session recovery and require the relevant herdr integrations.
 
+Each window reopens on the workspace it was showing, not the tab within it. The
+workspace name comes from the saved window title, so `ui.window_title` must end in
+`{workspace}`, as Herdr's default does. Before opening each window, the restore
+connects to the server as a short-lived client through Herdr's stable client
+protocol and selects that workspace, which sets where the next window opens without
+moving windows already open. If the server is unreachable, or no single workspace
+matches the title (one was renamed, closed or shares a name), the window opens on
+Herdr's active workspace and the restore result records a warning. A window moved
+with `herdr workspace focus` can keep its old title, so it reopens on that older
+workspace.
+
 Checkpoints preserve the running Herdr client's executable path, so custom builds
 restore independently of shell aliases and the checkpoint service's `PATH`. If
 the process executable cannot be read, the original invocation is retained (with

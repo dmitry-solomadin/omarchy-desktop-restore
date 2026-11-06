@@ -22,6 +22,7 @@ from shared_agents import capture_group, deduplicate_groups, restore_entries
 from terminals import TERMINALS, terminal_launch
 from window_events import WindowEvents
 from tiling import TiledOrder
+import herdr_workspace
 import restore_log
 import restore_diagnostics
 import recovery
@@ -907,7 +908,7 @@ def place(saved, actual):
         dispatch('window.fullscreen_state', window=selector, internal=saved['fullscreen'], client=-1, action='set')
 
 
-def wait_for_window(saved, before, claimed, browser_launched):
+def wait_for_window(saved, before, claimed, slow_title):
     deadline = time.monotonic() + 15
     first_seen, locations = None, {}
     while time.monotonic() < deadline:
@@ -921,7 +922,7 @@ def wait_for_window(saved, before, claimed, browser_launched):
         if candidates:
             first_seen = first_seen if first_seen is not None else time.monotonic()
             exact = next((c for c in candidates if c['title'] == saved['title']), None)
-            if exact or time.monotonic() - first_seen > (3 if browser_launched else 0.5):
+            if exact or time.monotonic() - first_seen > (3 if slow_title else 0.5):
                 actual = exact or candidates[0]
                 moved = locations[actual['address']] != (actual.get('workspace'), actual.get('monitor'))
                 return actual, moved
@@ -962,7 +963,19 @@ def restore(snapshot, on_event=None):
             saved = resolve_saved_app(saved, apps)
         lanes.setdefault(saved['class'], []).append(saved)
     progress_lock = threading.Lock()
+    herdr_order = threading.Lock()
     tile_order = TiledOrder([saved for lane in lanes.values() for saved in lane], live, hypr, run, lua)
+
+    def select_herdr_workspace(saved, label):
+        try:
+            selected = herdr_workspace.select(saved)
+        except herdr_workspace.Unavailable as error:
+            with progress_lock:
+                warnings.append(f'{label}: Herdr workspace not selected: {error}')
+            event('herdr_workspace_skipped', saved, reason=str(error))
+            return False
+        event('herdr_workspace_selected', saved, herdr_workspace=selected)
+        return True
 
     def restore_class(windows):
         nonlocal restored, already, completed
@@ -1003,19 +1016,27 @@ def restore(snapshot, on_event=None):
                 launch_diagnostic = None
                 before = {w['address'] for w in hypr('clients')}
                 group = saved.get('browser_group')
-                if not group or group not in launched_browsers:
-                    if browser_open:
-                        raise RuntimeError('Browser is already open; restore its missing windows from History')
-                    event('launch_requested', saved,
-                          executable=shutil.which(saved['launch'][0]),
-                          terminal=saved.get('terminal'))
-                    launch_diagnostic = launch(saved)
-                    if isinstance(launch_diagnostic, dict):
-                        event('ghostty_diagnostics_started', saved, **launch_diagnostic)
-                    if group:
-                        launched_browsers[group] = before
-                before = launched_browsers.get(group, before)
-                actual, moved = wait_for_window(saved, before, taken, group in launched_browsers)
+                # Each Herdr window opens on the server's default workspace, so it
+                # must attach before the next one changes it, across terminal classes.
+                with herdr_order if saved['kind'] == 'herdr' else contextlib.nullcontext():
+                    selected = saved['kind'] == 'herdr' and select_herdr_workspace(saved, label)
+                    if not group or group not in launched_browsers:
+                        if browser_open:
+                            raise RuntimeError('Browser is already open; restore its missing windows from History')
+                        event('launch_requested', saved,
+                              executable=shutil.which(saved['launch'][0]),
+                              terminal=saved.get('terminal'))
+                        launch_diagnostic = launch(saved)
+                        if isinstance(launch_diagnostic, dict):
+                            event('ghostty_diagnostics_started', saved, **launch_diagnostic)
+                        if group:
+                            launched_browsers[group] = before
+                    before = launched_browsers.get(group, before)
+                    # The saved title only appears once Herdr has attached.
+                    actual, moved = wait_for_window(saved, before, taken, group in launched_browsers or selected)
+                if selected and actual['title'] != saved['title']:
+                    with progress_lock:
+                        warnings.append(f"{label}: Herdr window opened as {actual['title']!r}")
                 with progress_lock:
                     claimed.add(actual['address'])
                     # Remember the launch before optional placement. Serialize
