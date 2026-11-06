@@ -3,7 +3,7 @@
 Save your Omarchy desktop automatically and restore it after reboot with
 **Super+Shift+R**. Runs silently in the background, with no bar widget or notifications.
 
-Version **0.6.3** · Omarchy 4 / Lua-based Hyprland · MIT license
+Version **0.6.4** · Omarchy 4 / Lua-based Hyprland · MIT license
 
 [![Checks](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml/badge.svg)](https://github.com/dmitry-solomadin/omarchy-desktop-restore/actions/workflows/check.yml)
 
