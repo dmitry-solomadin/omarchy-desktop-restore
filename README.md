@@ -73,6 +73,12 @@ responses. Missing, stale or ambiguous records are skipped.
 Restores default and named sessions. Agent conversations inside panes use herdr's
 native session recovery and require the relevant herdr integrations.
 
+Checkpoints preserve the running Herdr client's executable path, so custom builds
+restore independently of shell aliases and the checkpoint service's `PATH`. If
+the process executable cannot be read, the original invocation is retained (with
+explicit relative paths made absolute). Older checkpoints containing only `herdr`
+still use `PATH` until refreshed from the running clients.
+
 ### Shared-process terminals
 
 Reliable window-to-agent matches take priority and retain their original layout.
@@ -290,8 +296,8 @@ alone is not classified as a crash. After a disappearance, the service checks th
 current boot's journal for matching core-dump metadata, allowing another thirty
 seconds for delayed reports. `restored_process_coredump` includes the signal,
 executable and core-file path when available. Its run ID matches the diagnostic
-ID in the original `window_restored` event. No terminal output, core contents or
-process arguments are copied. Journal access failures or an absent core report
+ID in the original `window_restored` event. The event log does not copy terminal
+output, core contents or process arguments. Journal access failures or an absent core report
 do not establish a clean exit. This is diagnostic observation, not automatic retry.
 
 For a reported crash, inspect the recorded PID with `coredumpctl info <PID>`.
@@ -307,7 +313,31 @@ directory, linked from `ghostty_diagnostics_started` and `window_restored` event
   at 4 MiB, keeping recent output when it fills. Logging lasts until Ghostty exits.
 - `metadata.json`: Ghostty's full `+version` build details, executable ELF build ID
   when `readelf` is available, herdr version, kernel and boot ID, PID, and the exact
-  exit code or signal (such as `SIGSEGV`).
+  exit code or signal (such as `SIGSEGV`). It also records the executable SHA-256
+  and the outcome of automatic crash-report collection.
+- `crash.txt`: on a fatal crash signal, a bounded GDB report containing thread
+  backtraces (without argument values or locals), registers, the instruction/source
+  location when resolvable, nearby disassembly, and loaded-library mappings.
+  This requires `gdb`, `coredumpctl`, and a readable systemd core. The supervisor
+  allows thirty seconds for the core journal record and sixty seconds for GDB;
+  the report is capped at 2 MiB. Missing tools/cores, timeouts, and truncated
+  reports are recorded in `metadata.json`. Normal exits and ordinary termination
+  signals do not start a debugger. Collection also works before a window maps
+  and after the watcher's two-minute observation period.
+
+One private copy of each distinct Ghostty executable is retained under
+`ghostty-diagnostics/binaries/<sha256>/ghostty`, shared across attempts. This lets
+GDB use the exact crashing executable after a package upgrade. Arch's Ghostty
+binary currently takes about 30 MiB per version; archival failure does not block
+launching. GDB uses installed debug symbols and may fetch matching symbols from
+`DEBUGINFOD_URLS` (default: `https://debuginfod.archlinux.org`). Its startup scripts
+and executable auto-load scripts are disabled.
+
+An executable copy does **not** replace debug symbols: stripped builds can still
+produce unnamed frames. Naming those functions requires a matching debug-symbol
+package or an unstripped build. The saved build ID identifies which symbols are
+needed. Reports omit GDB's startup banner, which can contain the original command
+line; core extraction remains managed by `coredumpctl`.
 
 These are native application logs, so they can include paths and other details
 Ghostty chooses to print; the terminal's PTY/conversation stream is not captured.

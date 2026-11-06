@@ -332,7 +332,12 @@ def agent_session(pid, kind, args, procs, state):
         return {'kind': kind, 'cwd': proc['cwd'], 'opencode_args': args, 'agent_env': env}
     if kind == 'herdr':
         session = herdr_session(args, env)
-        argv = ['herdr', '--session', session]
+        # The watcher does not inherit interactive aliases, and its PATH can
+        # select a different build. Prefer the actual running executable.
+        executable = proc.get('exe') or proc['cmd'][0]
+        if not Path(executable).is_absolute() and '/' in executable:
+            executable = str(Path(proc['cwd']) / executable)
+        argv = [executable, '--session', session]
         cwd = proc['cwd']
         env = {k: v for k, v in env.items() if k in ('HERDR_CONFIG_PATH', 'XDG_CONFIG_HOME')}
     else:

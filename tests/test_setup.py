@@ -44,6 +44,8 @@ class SetupTests(unittest.TestCase):
         self.integration.menu.parent.mkdir(parents=True)
         self.original_menu = '{\n // Keep my comments\n "personal": {"action": "open https://example.com/a,b"}\n}\n'
         self.integration.menu.write_text(self.original_menu)
+        # Test preservation of an explicit mode, independently of the runner's umask.
+        self.integration.menu.chmod(0o644)
 
     def test_install_and_uninstall_round_trip_with_spaces_in_path(self):
         self.integration.install()

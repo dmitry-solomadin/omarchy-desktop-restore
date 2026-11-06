@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -120,6 +121,33 @@ class AgentTests(unittest.TestCase):
             self.procs[12]['cmd'] = ['herdr'] + args
             result = agents.terminal_agent(self.window, self.procs, self.state)
             self.assertEqual(result['argv'], expected)
+
+    def test_herdr_custom_executable_wins_over_restore_path(self):
+        custom = self.state / 'custom build' / 'herdr'
+        system = self.state / 'system' / 'herdr'
+        for path, label in ((custom, 'modified'), (system, 'vanilla')):
+            path.parent.mkdir()
+            path.write_text(f'#!/bin/sh\nprintf "{label} %s %s\\n" "$1" "$2"\n')
+            path.chmod(0o700)
+        self.procs[12].update(cmd=['herdr', '--session', 'work'], exe=str(custom))
+        saved = agents.terminal_agent(self.window, self.procs, self.state)
+        result = subprocess.run(saved['argv'], capture_output=True, text=True, check=True,
+                                env={**os.environ, 'PATH': str(system.parent)})
+        self.assertEqual(result.stdout, 'modified --session work\n')
+        self.assertEqual(saved['argv'][0], str(custom))
+        # A removed custom build must not silently launch whichever herdr is on PATH.
+        self.procs[12]['exe'] = str(self.state / 'missing' / 'herdr')
+        saved = agents.terminal_agent(self.window, self.procs, self.state)
+        with self.assertRaises(FileNotFoundError):
+            subprocess.run(saved['argv'], env={**os.environ, 'PATH': str(system.parent)})
+
+    def test_herdr_explicit_invocation_is_preserved_when_exe_is_unreadable(self):
+        for command, expected in (('/custom build/herdr', '/custom build/herdr'),
+                                  ('./target/release/herdr', '/work/target/release/herdr')):
+            with self.subTest(command=command):
+                self.procs[12].update(cmd=[command], exe='')
+                saved = agents.terminal_agent(self.window, self.procs, self.state)
+                self.assertEqual(Path(saved['argv'][0]), Path(expected))
 
     def test_herdr_owns_its_agent_panes(self):
         self.procs[12]['cmd'] = ['herdr', '--session', 'project']

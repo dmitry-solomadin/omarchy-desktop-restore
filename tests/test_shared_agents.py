@@ -232,6 +232,22 @@ class SharedAgentsTests(unittest.TestCase):
         self.assertEqual(len(entries), 4)
         self.assertEqual(len({e['key'] for e in entries}), 4)
 
+    def test_herdr_groups_keep_each_clients_binary_and_environment_through_restore(self):
+        binaries = ['/home/test/custom build/herdr', '/usr/bin/herdr']
+        for pid, binary in zip((21, 22), binaries):
+            self.procs[pid].update(cmd=['herdr'], exe=binary)
+        env = {'HERDR_CONFIG_PATH': '/custom config/herdr.toml'}
+        with patch.object(agents, 'process_env', return_value=env):
+            snapshot = app.capture()
+            self.assertEqual(app.capture(fast=True)['agent_groups'], snapshot['agent_groups'])
+        entries = restore_entries(snapshot)
+        self.assertEqual(len(entries), 2)
+        for entry, binary in zip(entries, binaries):
+            expected = ['env', 'HERDR_CONFIG_PATH=/custom config/herdr.toml', binary, '--session', 'default']
+            self.assertEqual(entry['argv'], expected)
+            self.assertEqual(app.launch_command(entry)[-len(expected):], expected)
+            self.assertEqual(entry['agent_env'], env)
+
     def test_restore_launches_each_herdr_client_of_same_session(self):
         for pid in (21, 22):
             self.procs[pid]['cmd'] = ['herdr']

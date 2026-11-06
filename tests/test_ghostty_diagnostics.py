@@ -1,6 +1,7 @@
 """Exercise the native-log wrapper without a compositor or a real crash."""
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -33,6 +34,8 @@ class GhosttyDiagnosticsTests(unittest.TestCase):
         self.assertEqual(metadata['returncode'], 0)
         self.assertIsNone(metadata['signal'])
         self.assertGreater(metadata['pid'], 0)
+        self.assertTrue(Path(metadata['archived_executable']).is_file())
+        self.assertNotIn('crash_report', metadata)
         self.assertEqual((directory / 'runtime.log').stat().st_mode & 0o777, 0o600)
         self.assertEqual((directory / 'metadata.json').stat().st_mode & 0o777, 0o600)
 
@@ -45,6 +48,7 @@ class GhosttyDiagnosticsTests(unittest.TestCase):
         metadata = json.loads((directory / 'metadata.json').read_text())
         self.assertEqual(metadata['signal'], 'SIGTERM')
         self.assertEqual(metadata['returncode'], -15)
+        self.assertNotIn('crash_report', metadata)
 
     def test_bounded_log_retains_recent_output(self):
         stream = io.BytesIO()
@@ -67,7 +71,8 @@ class GhosttyDiagnosticsTests(unittest.TestCase):
 
     def test_log_open_failure_after_metadata_does_not_block_launch(self):
         with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
+            directory = Path(temporary) / 'logs'
+            directory.mkdir()
             (directory / 'runtime.log').mkdir()
             result = subprocess.run([sys.executable, str(Path(diagnostics.__file__)), str(directory),
                                      sys.executable, '-c', "print('launched')"],
@@ -85,3 +90,31 @@ class GhosttyDiagnosticsTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 diagnostics.main(Path('/unused'), ['ghostty'])
         launch.assert_not_called()
+
+    def test_failed_crash_collection_preserves_child_exit_and_is_recorded(self):
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / 'logs'
+            with patch.object(diagnostics, 'version', return_value='test'), \
+                 patch.object(diagnostics.signal, 'signal'), \
+                 patch.object(diagnostics.ghostty_crash, 'collect', side_effect=OSError('unavailable')):
+                code = diagnostics.supervise(directory, [sys.executable, '-c', 'raise SystemExit(23)'])
+            self.assertEqual(code, 23)
+            metadata = json.loads((directory / 'metadata.json').read_text())
+            self.assertEqual(metadata['returncode'], 23)
+            self.assertEqual(metadata['crash_report']['status'], 'collection_failed')
+
+    def test_binary_archive_failure_does_not_prevent_launch(self):
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / 'logs'
+            with patch.object(diagnostics, 'version', return_value='test'), \
+                 patch.object(diagnostics.signal, 'signal'), \
+                 patch.object(diagnostics.ghostty_crash, 'archive_executable', side_effect=OSError('full')):
+                code = diagnostics.supervise(directory, [sys.executable, '-c', 'raise SystemExit(23)'])
+            self.assertEqual(code, 23)
+            metadata = json.loads((directory / 'metadata.json').read_text())
+            self.assertEqual(metadata['binary_archive_error'], 'OSError')
+            self.assertNotIn('archived_executable', metadata)

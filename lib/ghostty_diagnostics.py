@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+import ghostty_crash
+
 LIMIT = 4 * 1024 * 1024
 
 
@@ -44,7 +46,11 @@ def supervise(directory, command, launched=None):
     metadata['executable'] = os.path.realpath(executable)
     notes = version(['readelf', '-n', executable])
     metadata['elf_build_id'] = next((line.split('Build ID:', 1)[1].strip()
-                                     for line in notes.splitlines() if 'Build ID:' in line), None)
+                                      for line in notes.splitlines() if 'Build ID:' in line), None)
+    try:
+        metadata.update(ghostty_crash.archive_executable(executable, directory))
+    except OSError as error:
+        metadata['binary_archive_error'] = type(error).__name__
     path = directory / 'metadata.json'
 
     def save():
@@ -91,6 +97,14 @@ def supervise(directory, command, launched=None):
                     elapsed_seconds=round(time.monotonic() - started, 3), returncode=code,
                     signal=signal.Signals(-code).name if code < 0 else None)
     save()
+    try:
+        crash = ghostty_crash.collect(directory, metadata)
+        if crash is not None:
+            metadata['crash_report'] = crash
+            save()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        metadata['crash_report'] = {'status': 'collection_failed', 'error': type(error).__name__}
+        save()
     return 128 - code if code < 0 else code
 
 
