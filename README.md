@@ -41,21 +41,37 @@ Run inside your Omarchy session:
 omarchy plugin add https://github.com/dmitry-solomadin/omarchy-desktop-restore --enable
 ```
 
-Enabling the plugin automatically installs its services, shortcut and power-menu
-entries. If Claude Code or Codex is installed, a terminal window then asks whether
-to add their session hooks (see [Claude Code and Codex](#claude-code-and-codex)).
+What happens next:
+
+1. `omarchy plugin add` asks you to confirm, then downloads and enables the plugin.
+2. Within a few seconds, setup adds the **Super+Shift+R** shortcut, the Reboot and
+   Shutdown power-menu entries, and two user services, without root:
+   `omarchy-desktop-restore.service` saves checkpoints and
+   `omarchy-desktop-restore-lifecycle.service` cleans up if the plugin is removed.
+   A user post-boot hook starts both.
+3. If Claude Code or Codex is installed, a terminal window explains their session
+   hooks and asks whether to add them. See [Claude Code and Codex](#claude-code-and-codex).
+
+From then on your desktop is saved automatically. Existing settings are preserved.
 Plugin updates refresh the integration on the next load; ordinary shell reloads
-do not reinstall or restart it. Existing settings are preserved. Setup conflicts
-appear in the Omarchy shell logs.
+do not reinstall or restart it. If you install Claude Code or Codex later, you are
+asked about it the next time the shell starts.
 
-Setup runs without root. It manages two user services:
-`omarchy-desktop-restore.service` saves checkpoints, and
-`omarchy-desktop-restore-lifecycle.service` handles removal cleanup.
-A user post-boot hook starts both; the restore shortcut and power-menu entries
-are added to user configuration.
+### Check the installation
 
-If you install Claude Code or Codex later, you are asked about it the next time
-the shell starts. Agent-specific setup below still applies.
+```sh
+systemctl --user is-active omarchy-desktop-restore.service omarchy-desktop-restore-lifecycle.service
+desktop-restore agent-hooks status
+```
+
+Both services should report `active`, and the status shows your answer for each
+agent. If setup finds a conflict, it changes nothing and explains why in the
+Omarchy shell log. Conflicts include Super+Shift+R already being bound, or
+customized Reboot or Shutdown menu entries. To read the log:
+
+```sh
+journalctl --user -t omarchy-shell --since today | grep "Desktop Restore:"
+```
 
 ## Additional agent setup
 
@@ -91,8 +107,8 @@ your existing settings and hooks. Custom `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
 paths are respected. Disabling, or removing the plugin, takes out only these
 hooks and restores the file exactly when nothing else in it has changed.
 
-- **Claude Code:** new sessions use the hooks automatically. Restart sessions
-  that were already open.
+- **Claude Code:** picks up the hooks automatically. Sessions that are already
+  open start recording with their next prompt.
 - **Codex:** Codex runs a new hook only after you trust it. Open `/hooks` in
   Codex once and trust the Desktop Restore hooks.
 

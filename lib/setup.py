@@ -588,7 +588,7 @@ UMask=0077
             print(self.agent_hook_status(kind, choices, receipt))
         added = self.hooked_agents(receipt) - before if receipt is not None else set()
         if 'claude' in added:
-            print('Claude Code sessions that are already open pick up the hooks after a restart.')
+            print('Claude Code sessions that are already open start recording with their next prompt.')
         if 'codex' in added:
             print('Codex runs new hooks only after you trust them: open /hooks in Codex once.')
 
