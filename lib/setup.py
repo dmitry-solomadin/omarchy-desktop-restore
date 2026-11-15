@@ -709,10 +709,13 @@ if __name__ == '__main__':
     parser.add_argument('command', choices=['install', 'uninstall', 'start', 'watch-removal', 'agent-hooks'])
     parser.add_argument('action', nargs='?', choices=['enable', 'disable', 'status', 'ask'],
                         help='agent-hooks only')
-    parser.add_argument('agents', nargs='*', choices=list(AGENTS),
-                        help='agent-hooks only; defaults to every installed agent')
+    # No choices here: Python 3.10 rejects an empty list against them.
+    parser.add_argument('agents', nargs='*', metavar='agent',
+                        help='claude or codex, agent-hooks only; defaults to every installed agent')
     args = parser.parse_args()
-    if (args.command == 'agent-hooks') != (args.action is not None) or (args.agents and args.action == 'status'):
+    if ((args.command == 'agent-hooks') != (args.action is not None)
+            or (args.agents and args.action == 'status')
+            or any(agent not in AGENTS for agent in args.agents)):
         parser.error('usage: agent-hooks {enable,disable,status} [claude] [codex]')
     try:
         if args.command == 'agent-hooks':

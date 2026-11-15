@@ -433,9 +433,10 @@ class SetupTests(unittest.TestCase):
                           env=environment, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'Claude Code: off (not asked yet)\nCodex: off (not asked yet)\n')
-        result = REAL_RUN([sys.executable, '-B', str(ROOT / 'lib/setup.py'), 'agent-hooks'],
-                          env=environment, capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 2)
+        for wrong in (['agent-hooks'], ['agent-hooks', 'enable', 'cursor'], ['start', 'claude']):
+            result = REAL_RUN([sys.executable, '-B', str(ROOT / 'lib/setup.py'), *wrong],
+                              env=environment, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2, wrong)
         result = REAL_RUN([sys.executable, '-B', str(ROOT / 'lib/setup.py'), 'agent-hooks', 'enable', 'codex'],
                           env=environment, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
