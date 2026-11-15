@@ -107,7 +107,8 @@ def recorded_session(kind, owners, procs, state):
         try:
             data = json.loads((state / f'{kind}-{pid}.json').read_text())
         except (OSError, ValueError):
-            raise ValueError(f'No current {kind} session hook record; restart the agent or submit a prompt after enabling its hooks') from None
+            raise ValueError(f'No current {kind} session hook record; if its hooks are off, run '
+                             f'"desktop-restore agent-hooks enable", otherwise restart the agent or submit a prompt') from None
         if (not isinstance(data, dict) or data.get('kind') != kind or data.get('pid') != pid
                 or data.get('boot') != BOOT_ID or data.get('start') != procs[pid].get('start')):
             raise ValueError(f'Stale {kind} session hook record; waiting for a fresh event')

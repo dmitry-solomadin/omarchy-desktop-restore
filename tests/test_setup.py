@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -24,16 +25,18 @@ class SetupTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         env = patch.dict(os.environ, HOME=str(self.home), CODEX_HOME=str(self.home / '.codex'),
                          CLAUDE_CONFIG_DIR=str(self.home / '.claude'), XDG_CONFIG_HOME=str(self.home / '.config'),
-                         XDG_STATE_HOME=str(self.home / '.local/state'))
+                         XDG_STATE_HOME=str(self.home / '.local/state'), WAYLAND_DISPLAY='wayland-test')
         env.start()
         self.addCleanup(env.stop)
         self.commands = []
+        self.launched = []
 
         def run(args):
             self.commands.append(args)
             return '[]' if args == ['hyprctl', '-j', 'binds'] else ''
 
         for mocking in (patch.object(setup, 'run', side_effect=run),
+                        patch.object(setup, 'launch', side_effect=lambda *args: self.launched.append(args)),
                         patch.object(setup.shutil, 'which', return_value='/usr/bin/python3'),
                         patch.object(setup.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', ''))):
             mocking.start()
@@ -46,6 +49,19 @@ class SetupTests(unittest.TestCase):
         self.integration.menu.write_text(self.original_menu)
         # Test preservation of an explicit mode, independently of the runner's umask.
         self.integration.menu.chmod(0o644)
+
+    def choose(self, **choices):
+        self.integration.choices.parent.mkdir(parents=True, exist_ok=True)
+        self.integration.choices.write_text(json.dumps(choices))
+
+    def answer(self, code):
+        """Run the question as its terminal would, with gum returning code."""
+        result = subprocess.CompletedProcess([], code, '', '')
+        with patch.object(setup.subprocess, 'run', return_value=result), patch('builtins.print'):
+            return self.integration.agent_hooks('ask', ['claude', 'codex'])
+
+    def hooked(self):
+        return self.integration.hooked_agents(json.loads(self.integration.receipt.read_text()))
 
     def test_install_and_uninstall_round_trip_with_spaces_in_path(self):
         self.integration.install()
@@ -99,6 +115,7 @@ class SetupTests(unittest.TestCase):
             self.assertIn('XDG_STATE_HOME=' + str(self.integration.state.parent), text)
 
     def test_failed_upgrade_rolls_back_new_files_receipt_and_user_edits(self):
+        self.choose(claude=True, codex=True)
         with patch.object(setup.shutil, 'which', side_effect=lambda command:
                           None if command == 'codex' else '/usr/bin/python3'):
             self.integration.install()
@@ -169,6 +186,7 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn('system.reboot', parsed)
 
     def test_upgrade_and_uninstall_preserve_sibling_agent_hooks(self):
+        self.choose(claude=True)
         self.integration.install()
         settings = self.home / '.claude/settings.json'
         config = json.loads(settings.read_text())
@@ -182,6 +200,19 @@ class SetupTests(unittest.TestCase):
         remaining = json.loads(settings.read_text())
         for event in ('SessionStart', 'UserPromptSubmit'):
             self.assertEqual(remaining['hooks'][event], [{'hooks': [extra]}])
+
+    def test_upgrade_leaves_agent_settings_untouched_and_keeps_non_ascii_text(self):
+        self.choose(claude=True)
+        settings = self.home / '.claude/settings.json'
+        settings.parent.mkdir()
+        settings.write_text('{"note": "scope — local"}\n')
+        self.integration.install()
+        self.assertIn('scope — local', settings.read_text())
+        # The agent rewrites its file in its own style after our hooks went in.
+        text = json.dumps(json.loads(settings.read_text()), ensure_ascii=False) + '\n'
+        settings.write_text(text)
+        self.integration.upgrade()
+        self.assertEqual(settings.read_text(), text)
 
     def test_changed_agent_hook_matcher_is_not_claimed_as_our_hook(self):
         group = {'hooks': [{'type': 'command', 'command': 'record'}]}
@@ -248,14 +279,168 @@ class SetupTests(unittest.TestCase):
         self.integration.execute('start')
         self.assertEqual(json.loads(self.integration.receipt.read_text())['revision'], self.integration.revision())
 
-    def test_shell_start_picks_up_a_newly_installed_agent(self):
+    def test_shell_start_picks_up_an_agent_installed_after_saying_yes(self):
         self.integration.root.mkdir()
+        self.choose(claude=True, codex=True)
         with patch.object(setup.shutil, 'which', side_effect=lambda command:
                           None if command == 'codex' else '/usr/bin/python3'):
             self.integration.execute('start')
         self.assertFalse((self.home / '.codex/hooks.json').exists())
         self.integration.execute('start')
         self.assertTrue((self.home / '.codex/hooks.json').exists())
+        self.assertEqual(self.launched, [])
+
+    def test_first_start_adds_no_agent_hooks_and_asks_once(self):
+        self.integration.root.mkdir()
+        self.integration.execute('start')
+        self.assertFalse((self.home / '.claude/settings.json').exists())
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
+        self.assertEqual(self.hooked(), set())
+        self.assertEqual(len(self.launched), 1)
+        launcher, command = self.launched[0]
+        self.assertEqual(launcher, '/usr/bin/python3')  # which() is mocked for every command
+        words = shlex.split(command)
+        self.assertEqual(words[-4:], ['agent-hooks', 'ask', 'claude', 'codex'])
+        self.assertEqual(words[-5], str(self.integration.root / 'lib/setup.py'))
+        # The terminal does not inherit this process's environment.
+        for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'):
+            self.assertIn(f'{name}={os.environ[name]}', words)
+        self.integration.execute('start')
+        self.assertEqual(len(self.launched), 1)
+
+    def test_closed_question_records_nothing_and_returns_at_a_later_start(self):
+        self.integration.root.mkdir()
+        self.integration.execute('start')
+        self.assertEqual(self.answer(130), setup.DISMISSED)
+        self.assertFalse(self.integration.choices.exists())
+        self.assertEqual(self.hooked(), set())
+        old = time.time() - setup.ASK_AGAIN_AFTER - 1
+        os.utime(self.integration.asked, (old, old))
+        self.integration.execute('start')
+        self.assertEqual(len(self.launched), 2)
+
+    def test_answering_yes_adds_hooks_with_no_further_setup(self):
+        self.integration.root.mkdir()
+        self.integration.execute('start')
+        self.assertEqual(self.answer(0), 0)
+        self.assertEqual(self.hooked(), {'claude', 'codex'})
+        self.assertEqual(self.integration.agent_choices(), {'claude': True, 'codex': True})
+        settings = json.loads((self.home / '.claude/settings.json').read_text())
+        command = settings['hooks']['SessionStart'][0]['hooks'][0]['command']
+        self.assertIn('lib/agents.py', command)
+        self.assertIn('record claude', command)
+        old = time.time() - setup.ASK_AGAIN_AFTER - 1
+        os.utime(self.integration.asked, (old, old))
+        (self.integration.root / 'manifest.json').write_text('{"version":"updated"}')
+        self.integration.execute('start')
+        self.assertEqual(self.hooked(), {'claude', 'codex'})
+        self.assertEqual(len(self.launched), 1)
+
+    def test_answering_no_is_remembered(self):
+        self.integration.root.mkdir()
+        self.integration.execute('start')
+        self.assertEqual(self.answer(1), 0)
+        self.assertEqual(self.integration.agent_choices(), {'claude': False, 'codex': False})
+        self.assertFalse((self.home / '.claude/settings.json').exists())
+        old = time.time() - setup.ASK_AGAIN_AFTER - 1
+        os.utime(self.integration.asked, (old, old))
+        self.integration.execute('start')
+        self.assertEqual(len(self.launched), 1)
+
+    def test_question_answered_elsewhere_closes_without_asking(self):
+        self.choose(claude=True, codex=False)
+        with patch.object(setup.subprocess, 'run') as gum:
+            self.assertEqual(self.integration.agent_hooks('ask', ['claude', 'codex']), setup.DISMISSED)
+        gum.assert_not_called()
+
+    def test_disable_restores_original_agent_settings_exactly(self):
+        path = self.home / '.claude/settings.json'
+        path.parent.mkdir()
+        original = '{\n    "model": "custom"\n}\n'
+        path.write_text(original)
+        self.integration.install()
+        with patch('builtins.print'):
+            self.integration.agent_hooks('enable', [])
+            self.assertEqual(self.hooked(), {'claude', 'codex'})
+            self.assertNotEqual(path.read_text(), original)
+            self.integration.agent_hooks('disable', ['claude'])
+            self.assertEqual(path.read_text(), original)
+            self.assertEqual(self.hooked(), {'codex'})
+            self.integration.agent_hooks('disable', [])
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
+        self.assertEqual(self.hooked(), set())
+        self.assertEqual(self.integration.agent_choices(), {'claude': False, 'codex': False})
+        self.integration.uninstall()
+        self.assertEqual(path.read_text(), original)
+
+    def test_existing_install_keeps_hooks_added_before_the_question(self):
+        self.integration.root.mkdir()
+        self.choose(claude=True, codex=True)
+        self.integration.execute('start')
+        # Installs from before the question have hooks and no recorded answer.
+        self.integration.choices.unlink()
+        (self.integration.root / 'manifest.json').write_text('{"version":"updated"}')
+        self.integration.execute('start')
+        self.assertEqual(self.hooked(), {'claude', 'codex'})
+        self.assertEqual(self.launched, [])
+        with patch('builtins.print') as output:
+            self.integration.agent_hooks('status', [])
+        self.assertIn('added before Desktop Restore asked', output.call_args_list[0].args[0])
+        with patch('builtins.print'):
+            self.integration.agent_hooks('disable', ['codex'])
+        self.assertEqual(self.hooked(), {'claude'})
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
+
+    def test_newly_installed_agent_is_asked_about_instead_of_hooked(self):
+        self.integration.root.mkdir()
+        self.choose(claude=True)
+        with patch.object(setup.shutil, 'which', side_effect=lambda command:
+                          None if command == 'codex' else '/usr/bin/python3'):
+            self.integration.execute('start')
+        self.assertEqual(self.launched, [])
+        self.integration.execute('start')
+        self.assertEqual(self.hooked(), {'claude'})
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
+        self.assertEqual(shlex.split(self.launched[0][1])[-3:], ['agent-hooks', 'ask', 'codex'])
+
+    def test_enable_before_setup_is_applied_by_the_first_install(self):
+        with patch('builtins.print'):
+            self.integration.agent_hooks('enable', ['claude'])
+        self.assertFalse((self.home / '.claude/settings.json').exists())
+        self.integration.install()
+        self.assertEqual(self.hooked(), {'claude'})
+
+    def test_enable_names_agents_when_none_is_installed(self):
+        with patch.object(setup.shutil, 'which', side_effect=lambda command:
+                          None if command in setup.AGENTS else '/usr/bin/python3'):
+            with self.assertRaisesRegex(RuntimeError, 'Neither Claude Code nor Codex'):
+                self.integration.agent_hooks('enable', [])
+        self.assertFalse(self.integration.choices.exists())
+
+    def test_failed_enable_keeps_the_previous_answer(self):
+        self.integration.install()
+        self.choose(claude=False)
+        settings = self.home / '.claude/settings.json'
+        settings.parent.mkdir()
+        settings.write_text('["not an object"]')
+        with self.assertRaisesRegex(RuntimeError, 'Invalid hooks object'):
+            self.integration.agent_hooks('enable', ['claude'])
+        self.assertEqual(self.integration.agent_choices(), {'claude': False})
+
+    def test_agent_hooks_command_line(self):
+        environment = {**os.environ, 'PATH': '/usr/bin:/bin'}
+        result = REAL_RUN([sys.executable, '-B', str(ROOT / 'lib/setup.py'), 'agent-hooks', 'status'],
+                          env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'Claude Code: off (not asked yet)\nCodex: off (not asked yet)\n')
+        result = REAL_RUN([sys.executable, '-B', str(ROOT / 'lib/setup.py'), 'agent-hooks'],
+                          env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        result = REAL_RUN([sys.executable, '-B', str(ROOT / 'lib/setup.py'), 'agent-hooks', 'enable', 'codex'],
+                          env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Codex: on, hooks are added when Desktop Restore finishes setup', result.stdout)
+        self.assertFalse((self.home / '.codex/hooks.json').exists())
 
     def test_shell_start_does_not_recreate_a_removed_plugin(self):
         self.integration.execute('start')
@@ -274,14 +459,16 @@ class SetupTests(unittest.TestCase):
         fakebin = self.home / 'fakebin'
         fakebin.mkdir()
         log = self.home / 'commands.log'
-        for command in ('hyprctl', 'systemctl', 'uwsm-app', 'gio', 'timeout', 'busctl'):
+        for command in ('hyprctl', 'systemctl', 'uwsm-app', 'gio', 'timeout', 'busctl',
+                        'claude', 'codex', setup.PROMPT_LAUNCHER):
             path = fakebin / command
             text = f'#!/bin/sh\nprintf "%s\\n" "{command} $*" >> {shlex.quote(str(log))}\n'
             if command == 'hyprctl':
                 text += 'if [ "$1" = "-j" ]; then /usr/bin/sleep 0.1; printf "[]\\n"; fi\n'
             path.write_text(text + 'exit 0\n')
             path.chmod(0o700)
-        env = {**os.environ, 'PATH': str(fakebin) + ':' + os.environ['PATH']}
+        # Never reach a real terminal launcher or agent, even outside CI.
+        env = {**os.environ, 'PATH': str(fakebin) + ':/usr/bin:/bin', 'WAYLAND_DISPLAY': 'wayland-test'}
         workers = [subprocess.Popen([sys.executable, '-B', str(ROOT / 'lib/setup.py'), 'start'],
                                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                    for _ in range(2)]
@@ -297,9 +484,14 @@ class SetupTests(unittest.TestCase):
         commands = log.read_text().splitlines()
         self.assertEqual(commands.count('hyprctl -j binds'), 1)
         self.assertFalse(any('restart' in command for command in commands))
+        questions = [command for command in commands if command.startswith(setup.PROMPT_LAUNCHER)]
+        self.assertEqual(len(questions), 1)
+        self.assertTrue(questions[0].endswith('agent-hooks ask claude codex'))
+        self.assertFalse((self.home / '.claude/settings.json').exists())
         self.assertEqual(self.integration.menu.read_text().count(setup.BEGIN), 1)
 
     def test_agent_hooks_keep_user_settings_across_update_and_uninstall(self):
+        self.choose(claude=True, codex=True)
         path = self.home / '.claude/settings.json'
         path.parent.mkdir()
         original = {'model': 'custom', 'hooks': {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'my-hook'}]}]}}

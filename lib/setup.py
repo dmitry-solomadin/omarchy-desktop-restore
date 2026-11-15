@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 
 PLUGIN_ID = 'io.github.dmitry-solomadin.desktop-restore'
@@ -20,6 +21,11 @@ LIFECYCLE_UNIT = 'omarchy-desktop-restore-lifecycle.service'
 ROOT = Path(__file__).resolve().parents[1]
 BEGIN = '// >>> ' + PLUGIN_ID
 END = '// <<< ' + PLUGIN_ID
+AGENTS = {'claude': 'Claude Code', 'codex': 'Codex'}
+PROMPT_LAUNCHER = 'omarchy-launch-floating-terminal-with-presentation'
+# A question closed without an answer comes back at a later shell start.
+ASK_AGAIN_AFTER = 600
+DISMISSED = 130
 
 
 def run(args):
@@ -27,6 +33,20 @@ def run(args):
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or str(args))
     return result.stdout.strip()
+
+
+def launch(*args):
+    subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def agent_json(config):
+    # Agents write their settings with non-ASCII text kept as is, e.g. a dash.
+    return json.dumps(config, indent=2, ensure_ascii=False) + '\n'
+
+
+def agent_names(kinds):
+    return ' and '.join(AGENTS[kind] for kind in kinds)
 
 
 def jsonc_text(text):
@@ -136,6 +156,9 @@ class Setup:
         self.config = Path(os.environ.get('XDG_CONFIG_HOME', self.home / '.config'))
         self.state = Path(os.environ.get('XDG_STATE_HOME', self.home / '.local/state')) / 'desktop-restore'
         self.receipt = self.state / 'installation.json'
+        # The user's answers about agent hooks; forgotten when the plugin is removed.
+        self.choices = self.state / 'agent-hooks.json'
+        self.asked = self.state / 'agent-hooks-asked'
         self.bindings = self.config / 'hypr/bindings.lua'
         self.menu = self.config / 'omarchy/extensions/omarchy-menu.jsonc'
         if self.receipt.exists():
@@ -182,14 +205,38 @@ class Setup:
             digest.update(f'{agent}:{bool(shutil.which(agent))}'.encode())
         return digest.hexdigest()
 
-    def agent_hook_files(self):
-        result = []
-        paths = {
+    def agent_config_paths(self):
+        return {
             'claude': Path(os.environ.get('CLAUDE_CONFIG_DIR', self.home / '.claude')) / 'settings.json',
             'codex': Path(os.environ.get('CODEX_HOME', self.home / '.codex')) / 'hooks.json',
         }
-        for kind, path in paths.items():
-            if not shutil.which(kind):
+
+    def agent_choices(self):
+        """Each agent maps to the user's yes or no; a missing agent was never asked."""
+        try:
+            choices = json.loads(self.choices.read_text())
+        except FileNotFoundError:
+            return {}
+        if not isinstance(choices, dict) or any(kind not in AGENTS or not isinstance(value, bool)
+                                                for kind, value in choices.items()):
+            raise RuntimeError(f'Invalid agent hook choices in {self.choices}')
+        return choices
+
+    def hooked_agents(self, receipt):
+        paths = {str(path): kind for kind, path in self.agent_config_paths().items()}
+        return {paths[item['path']] for item in (receipt or {}).get('files', [])
+                if item.get('agent_hooks') and item['path'] in paths}
+
+    def enabled_agents(self, receipt, choices=None):
+        """Hooks need a yes. Installs from before the question keep the hooks they have."""
+        choices = self.agent_choices() if choices is None else choices
+        hooked = self.hooked_agents(receipt)
+        return {kind for kind in AGENTS if choices.get(kind, kind in hooked)}
+
+    def agent_hook_files(self, enabled):
+        result = []
+        for kind, path in self.agent_config_paths().items():
+            if kind not in enabled or not shutil.which(kind):
                 continue
             if path.is_symlink():
                 raise RuntimeError(f'Agent hook config is a symlink: {path}')
@@ -204,6 +251,7 @@ class Setup:
                                'record', kind, str(self.state / 'agents')]) +
                    ' >/dev/null 2>&1 || :; fi')
             additions = {}
+            added = before is None
             for event in ('SessionStart', 'UserPromptSubmit'):
                 rows = hooks.setdefault(event, [])
                 if not isinstance(rows, list):
@@ -211,8 +259,10 @@ class Setup:
                 group = {'hooks': [{'type': 'command', 'command': cmd, 'timeout': 1}]}
                 if self.agent_hook_group(rows, group) is None:
                     rows.append(group)
+                    added = True
                 additions[event] = group
-            result.append((path, json.dumps(config, indent=2) + '\n', additions))
+            # Leave the agent's own formatting alone unless a hook was missing.
+            result.append((path, agent_json(config) if added else before, additions))
         return result
 
     @staticmethod
@@ -241,7 +291,46 @@ class Setup:
                 hooks.pop(event, None)
         if not hooks:
             config.pop('hooks', None)
-        return None if not config and item['before'] is None else json.dumps(config, indent=2) + '\n'
+        return None if not config and item['before'] is None else agent_json(config)
+
+    @staticmethod
+    def without_agent_hooks(current, item):
+        updated = Setup.remove_agent_hooks(current, item)
+        # Restore the exact original text when nothing else changed since.
+        if json.loads(updated or '{}') == json.loads(item['before'] or '{}'):
+            return item['before']
+        return updated
+
+    def agent_hook_changes(self, receipt, choices=None):
+        """Add hooks the user said yes to and remove the ones they turned off."""
+        changes = []
+        enabled = self.enabled_agents(receipt, choices)
+        for path, text, hooks in self.agent_hook_files(enabled):
+            entry = next((item for item in receipt['files'] if item['path'] == str(path)), None)
+            if entry is None:
+                entry = {'path': str(path), 'before': path.read_text() if path.exists() else None,
+                         'mode': path.stat().st_mode & 0o777 if path.exists() else 0o600, 'block': None}
+                receipt['files'].append(entry)
+            elif entry.get('agent_hooks') != hooks:
+                raise RuntimeError(f'Agent hook definition changed in {path}; uninstall before updating.')
+            elif path.exists():
+                current_hooks = json.loads(path.read_text()).get('hooks', {})
+                if any(self.agent_hook_group(current_hooks.get(event, []), group) is None
+                       for event, group in hooks.items()):
+                    raise RuntimeError(f'Managed agent hook was edited in {path}; preserve it before updating.')
+            entry.update(after=text, agent_hooks=hooks)
+            if text != (path.read_text() if path.exists() else None):
+                changes.append((path, text, entry['mode']))
+        paths = self.agent_config_paths()
+        for kind in sorted(self.hooked_agents(receipt) - enabled):
+            path = paths[kind]
+            entry = next(item for item in receipt['files'] if item['path'] == str(path))
+            receipt['files'].remove(entry)
+            if path.is_symlink():
+                raise RuntimeError(f'Agent hook config is a symlink: {path}')
+            if path.exists():
+                changes.append((path, self.without_agent_hooks(path.read_text(), entry), entry['mode']))
+        return changes
 
     def lifecycle_files(self):
         # This copy survives deletion of the plugin and can remove its own files.
@@ -315,21 +404,7 @@ UMask=0077
                 receipt['files'].append(entry)
             entry['after'] = text
             changes.append((path, text, mode))
-        for path, text, hooks in self.agent_hook_files():
-            entry = next((item for item in receipt['files'] if item['path'] == str(path)), None)
-            if entry is None:
-                entry = {'path': str(path), 'before': path.read_text() if path.exists() else None,
-                         'mode': path.stat().st_mode & 0o777 if path.exists() else 0o600, 'block': None}
-                receipt['files'].append(entry)
-            elif entry.get('agent_hooks') != hooks:
-                raise RuntimeError(f'Agent hook definition changed in {path}; uninstall before updating.')
-            elif path.exists():
-                current_hooks = json.loads(path.read_text()).get('hooks', {})
-                if any(self.agent_hook_group(current_hooks.get(event, []), group) is None
-                       for event, group in hooks.items()):
-                    raise RuntimeError(f'Managed agent hook was edited in {path}; preserve it before updating.')
-            entry.update(after=text, agent_hooks=hooks)
-            changes.append((path, text, entry['mode']))
+        changes.extend(self.agent_hook_changes(receipt))
         receipt['revision'] = self.revision()
         changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
         with file_transaction(changes):
@@ -398,7 +473,7 @@ UMask=0077
             add(path, text, mode)
         add(self.home / '.local/bin/desktop-restore',
             '#!/bin/sh\n# ' + PLUGIN_ID + '\nexec ' + shlex.quote(str(helper)) + ' "$@"\n', 0o700)
-        for path, text, hooks in self.agent_hook_files():
+        for path, text, hooks in self.agent_hook_files(self.enabled_agents(None)):
             add(path, text, hooks=hooks)
         return entries
 
@@ -416,14 +491,126 @@ UMask=0077
             return
         if not self.receipt.exists():
             self.install()
+        else:
+            receipt = json.loads(self.receipt.read_text())
+            if receipt['root'] != str(self.root):
+                raise RuntimeError('Desktop Restore integration belongs to a different plugin location.')
+            if receipt.get('revision') != self.revision():
+                self.install()
+            else:
+                run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
+        self.offer_agent_hooks()
+
+    def offer_agent_hooks(self):
+        """Ask in a terminal window before adding hooks for an agent nobody asked about."""
+        choices = self.agent_choices()
+        hooked = self.hooked_agents(json.loads(self.receipt.read_text()))
+        pending = [kind for kind in AGENTS
+                   if kind not in choices and kind not in hooked and shutil.which(kind)]
+        if not pending:
             return
-        receipt = json.loads(self.receipt.read_text())
-        if receipt['root'] != str(self.root):
-            raise RuntimeError('Desktop Restore integration belongs to a different plugin location.')
-        if receipt.get('revision') != self.revision():
-            self.install()
+        launcher = shutil.which(PROMPT_LAUNCHER)
+        if not launcher or not os.environ.get('WAYLAND_DISPLAY'):
+            print(f'{agent_names(pending)} session hooks are off. '
+                  'Turn them on with: desktop-restore agent-hooks enable', file=sys.stderr)
             return
-        run(['systemctl', '--user', 'start', UNIT, LIFECYCLE_UNIT])
+        try:
+            if time.time() - self.asked.stat().st_mtime < ASK_AGAIN_AFTER:
+                return
+        except FileNotFoundError:
+            pass
+        write(self.asked, '')
+        # The terminal starts from the session manager's environment, not ours.
+        environment = [f'HOME={self.home}', f'XDG_CONFIG_HOME={self.config}',
+                       f'XDG_STATE_HOME={self.state.parent}']
+        environment += [f'{name}={os.environ[name]}' for name in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME')
+                        if name in os.environ]
+        launch(launcher, shlex.join(['env', *environment, shutil.which('python3'),
+                                     str(self.root / 'lib/setup.py'), 'agent-hooks', 'ask', *pending]))
+
+    def agent_hooks(self, action, kinds):
+        if action == 'ask':
+            return self.ask_agent_hooks(kinds)
+        with self.lock():
+            if action == 'status':
+                self.print_agent_hooks()
+            else:
+                self.set_agent_hooks(action == 'enable', kinds)
+        return 0
+
+    def ask_agent_hooks(self, kinds):
+        kinds = [kind for kind in kinds if kind not in self.agent_choices()]
+        if not kinds:
+            return DISMISSED  # answered meanwhile, e.g. from another window
+        names = agent_names(kinds)
+        paths = ' and '.join(self.display(self.agent_config_paths()[kind]) for kind in kinds)
+        # Omarchy's floating terminal is about 76x24 and its logo takes 13 rows.
+        print(textwrap.fill(
+            f'Desktop Restore can reopen {names} windows on the same conversations '
+            f'after a reboot. For that it needs a small hook in {paths}. The hook saves '
+            'only the session ID and folder, never prompts or replies, and nothing '
+            "leaves this computer. Without it, these windows aren't restored.", width=72) + '\n',
+            flush=True)
+        if shutil.which('gum'):
+            answer = subprocess.run(['gum', 'confirm', '--affirmative', 'Add hooks',
+                                     '--negative', 'No', 'Add the session hooks?']).returncode
+        else:
+            try:
+                answer = 0 if input('Add the session hooks? [y/N] ').strip().lower() in ('y', 'yes') else 1
+            except (EOFError, KeyboardInterrupt):
+                answer = DISMISSED
+        if answer not in (0, 1):
+            return DISMISSED
+        with self.lock():
+            self.set_agent_hooks(answer == 0, kinds)
+        print('Change this anytime with: desktop-restore agent-hooks',
+              'disable' if answer == 0 else 'enable')
+        return 0
+
+    def set_agent_hooks(self, enable, kinds):
+        if not kinds:
+            kinds = [kind for kind in AGENTS if shutil.which(kind)] if enable else list(AGENTS)
+            if not kinds:
+                raise RuntimeError('Neither Claude Code nor Codex is installed. To turn hooks on for one '
+                                   'before installing it, name it: desktop-restore agent-hooks enable codex')
+        choices = {**self.agent_choices(), **{kind: enable for kind in kinds}}
+        changes = [(self.choices, json.dumps(choices, indent=2) + '\n', 0o600)]
+        receipt = json.loads(self.receipt.read_text()) if self.receipt.exists() else None
+        if receipt is not None:
+            if receipt['root'] != str(self.root):
+                raise RuntimeError('Desktop Restore integration belongs to a different plugin location.')
+            before = self.hooked_agents(receipt)
+            changes += self.agent_hook_changes(receipt, choices)
+            changes.append((self.receipt, json.dumps(receipt, indent=2) + '\n', 0o600))
+        with file_transaction(changes):
+            pass
+        for kind in kinds:
+            print(self.agent_hook_status(kind, choices, receipt))
+        added = self.hooked_agents(receipt) - before if receipt is not None else set()
+        if 'claude' in added:
+            print('Claude Code sessions that are already open pick up the hooks after a restart.')
+        if 'codex' in added:
+            print('Codex runs new hooks only after you trust them: open /hooks in Codex once.')
+
+    def print_agent_hooks(self):
+        receipt = json.loads(self.receipt.read_text()) if self.receipt.exists() else None
+        choices = self.agent_choices()
+        for kind in AGENTS:
+            print(self.agent_hook_status(kind, choices, receipt))
+
+    def agent_hook_status(self, kind, choices, receipt):
+        name = AGENTS[kind]
+        if kind in self.hooked_agents(receipt):
+            since = '' if kind in choices else ' (added before Desktop Restore asked)'
+            return f'{name}: on, hooks in {self.display(self.agent_config_paths()[kind])}{since}'
+        if choices.get(kind):
+            if receipt is None:
+                return f'{name}: on, hooks are added when Desktop Restore finishes setup'
+            return f'{name}: on, hooks are added once {kind} is installed'
+        return f'{name}: off' if kind in choices else f'{name}: off (not asked yet)'
+
+    def display(self, path):
+        return '~' + str(path)[len(str(self.home)):] if path.is_relative_to(self.home) else str(path)
 
     def install(self):
         entries = self.plan()
@@ -485,10 +672,7 @@ UMask=0077
                 continue
             current = path.read_text()
             if item.get('agent_hooks'):
-                updated = self.remove_agent_hooks(current, item)
-                if json.loads(updated or '{}') == json.loads(item['before'] or '{}'):
-                    updated = item['before']
-                changes.append((path, updated, item['mode']))
+                changes.append((path, self.without_agent_hooks(current, item), item['mode']))
             elif current == item['after']:
                 changes.append((path, item['before'], item['mode']))
             elif item['block'] and item['block'] in current:
@@ -522,9 +706,17 @@ UMask=0077
 if __name__ == '__main__':
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['install', 'uninstall', 'start', 'watch-removal'])
+    parser.add_argument('command', choices=['install', 'uninstall', 'start', 'watch-removal', 'agent-hooks'])
+    parser.add_argument('action', nargs='?', choices=['enable', 'disable', 'status', 'ask'],
+                        help='agent-hooks only')
+    parser.add_argument('agents', nargs='*', choices=list(AGENTS),
+                        help='agent-hooks only; defaults to every installed agent')
     args = parser.parse_args()
+    if (args.command == 'agent-hooks') != (args.action is not None) or (args.agents and args.action == 'status'):
+        parser.error('usage: agent-hooks {enable,disable,status} [claude] [codex]')
     try:
+        if args.command == 'agent-hooks':
+            sys.exit(Setup().agent_hooks(args.action, args.agents))
         Setup().execute(args.command)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
