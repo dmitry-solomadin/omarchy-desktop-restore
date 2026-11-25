@@ -717,13 +717,43 @@ def protect_shutdown():
     return fallback['protect_until']
 
 
+EXIT_ACTIONS = {'logout', 'reboot', 'firmware', 'shutdown'}
+
+
+def omarchy_session_exiting(proc_root=Path('/proc'), uid=None):
+    """Detect Omarchy's pre-reboot window teardown before logind sets PreparingForShutdown."""
+    uid = os.getuid() if uid is None else uid
+    for path in proc_root.glob('[0-9]*'):
+        try:
+            if path.stat().st_uid != uid:
+                continue
+            argv = [x.decode(errors='replace') for x in (path / 'cmdline').read_bytes().split(b'\0') if x]
+        except OSError:
+            continue
+        if not argv:
+            continue
+        names = {Path(arg).name for arg in argv[:2]}
+        if 'omarchy-hyprland-window-close-all' in names:
+            return True
+        if ('omarchy-system' in names and ('--execute' in argv or '--inhibited' in argv)
+                and any(arg in EXIT_ACTIONS for arg in argv)):
+            return True
+    return False
+
+
 def checkpoint_paused():
     if preparing_for_shutdown():
         return True
     final = read_json(STATE / 'shutdown.json', {})
     # The power menu saves before it starts closing windows, which can precede
     # logind's shutdown flag. Preserve that full snapshot through teardown.
-    return final.get('instance') == instance() and 0 <= time.time() - final.get('saved', 0) < 30
+    if final.get('instance') == instance() and 0 <= time.time() - final.get('saved', 0) < 30:
+        return True
+    if omarchy_session_exiting():
+        # Freeze latest.json before ExecStop's late save can see a half-closed desktop.
+        protect_shutdown()
+        return True
+    return False
 
 
 def save_shutdown(if_shutting_down=False):

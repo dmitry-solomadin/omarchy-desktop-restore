@@ -156,6 +156,39 @@ app.save_shutdown()
         with app.lock('restore', blocking=False), app.lock('state', blocking=False):
             pass
 
+    def test_omarchy_system_teardown_pauses_checkpoint_and_freezes_latest(self):
+        for cmdline in (
+            b'/bin/bash\0/usr/share/omarchy/bin/omarchy-system\0reboot\0--execute\0',
+            b'/bin/bash\0/usr/share/omarchy/bin/omarchy-system\0shutdown\0--inhibited\0',
+            b'/bin/bash\0/usr/share/omarchy/bin/omarchy-hyprland-window-close-all\0--wait\0',
+        ):
+            with self.subTest(cmdline=cmdline):
+                full = self.shutdown_desktop()
+                (app.STATE / 'shutdown.json').unlink(missing_ok=True)
+                proc_root = Path(self.temp.name) / 'proc'
+                proc = proc_root / '12345'
+                proc.mkdir(parents=True, exist_ok=True)
+                (proc / 'cmdline').write_bytes(cmdline)
+                self.assertTrue(app.omarchy_session_exiting(proc_root=proc_root, uid=os.getuid()))
+                with patch.object(app, 'preparing_for_shutdown', return_value=False), \
+                     patch.object(app, 'omarchy_session_exiting', return_value=True), \
+                     patch.object(app.time, 'time', return_value=100):
+                    self.assertTrue(app.checkpoint_paused())
+                frozen = app.read_json(app.STATE / 'shutdown.json')
+                self.assertEqual(frozen['windows'], full['windows'])
+                # A late ExecStop save must not replace the frozen pre-teardown desktop.
+                with patch.object(app, 'preparing_for_shutdown', return_value=True), \
+                     patch.object(app, 'capture') as late_capture:
+                    app.save_shutdown(if_shutting_down=True)
+                late_capture.assert_not_called()
+
+    def test_omarchy_session_exiting_ignores_unrelated_commands(self):
+        proc_root = Path(self.temp.name) / 'proc'
+        proc = proc_root / '12346'
+        proc.mkdir(parents=True, exist_ok=True)
+        (proc / 'cmdline').write_bytes(b'/bin/bash\0/usr/share/omarchy/bin/omarchy-system\0--help\0')
+        self.assertFalse(app.omarchy_session_exiting(proc_root=proc_root, uid=os.getuid()))
+
     def test_cancelled_power_action_resumes_saving_and_newer_work_wins(self):
         self.shutdown_desktop()
         with app.lock('restore'), patch.object(app.time, 'time', return_value=100):
