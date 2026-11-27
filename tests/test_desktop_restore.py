@@ -160,7 +160,7 @@ app.save_shutdown()
         for cmdline in (
             b'/bin/bash\0/usr/share/omarchy/bin/omarchy-system\0reboot\0--execute\0',
             b'/bin/bash\0/usr/share/omarchy/bin/omarchy-system\0shutdown\0--inhibited\0',
-            b'/bin/bash\0/usr/share/omarchy/bin/omarchy-hyprland-window-close-all\0--wait\0',
+            b'/bin/bash\0/usr/bin/omarchy-system-reboot\0',
         ):
             with self.subTest(cmdline=cmdline):
                 full = self.shutdown_desktop()
@@ -183,11 +183,16 @@ app.save_shutdown()
                 late_capture.assert_not_called()
 
     def test_omarchy_session_exiting_ignores_unrelated_commands(self):
-        proc_root = Path(self.temp.name) / 'proc'
-        proc = proc_root / '12346'
-        proc.mkdir(parents=True, exist_ok=True)
-        (proc / 'cmdline').write_bytes(b'/bin/bash\0/usr/share/omarchy/bin/omarchy-system\0--help\0')
-        self.assertFalse(app.omarchy_session_exiting(proc_root=proc_root, uid=os.getuid()))
+        for cmdline in (
+            b'/bin/bash\0/usr/share/omarchy/bin/omarchy-system\0--help\0',
+            b'/bin/bash\0/usr/bin/omarchy-hyprland-window-close-all\0',
+        ):
+            with self.subTest(cmdline=cmdline):
+                proc_root = Path(self.temp.name) / 'proc'
+                proc = proc_root / '12346'
+                proc.mkdir(parents=True, exist_ok=True)
+                (proc / 'cmdline').write_bytes(cmdline)
+                self.assertFalse(app.omarchy_session_exiting(proc_root=proc_root, uid=os.getuid()))
 
     def test_cancelled_power_action_resumes_saving_and_newer_work_wins(self):
         self.shutdown_desktop()

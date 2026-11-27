@@ -733,7 +733,8 @@ def omarchy_session_exiting(proc_root=Path('/proc'), uid=None):
         if not argv:
             continue
         names = {Path(arg).name for arg in argv[:2]}
-        if 'omarchy-hyprland-window-close-all' in names:
+        # Omarchy 4.0.x used one script per action.
+        if names & {'omarchy-system-reboot', 'omarchy-system-shutdown', 'omarchy-system-logout'}:
             return True
         if ('omarchy-system' in names and ('--execute' in argv or '--inhibited' in argv)
                 and any(arg in EXIT_ACTIONS for arg in argv)):
